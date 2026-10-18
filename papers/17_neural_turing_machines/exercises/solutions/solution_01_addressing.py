@@ -44,7 +44,10 @@ if __name__ == "__main__":
     
     memory = torch.randn(batch, N, M)
     memory[0, 0] = k[0]
-    
+    # [PATCH 2026-10-18] make the 9 distractor rows orthogonal to k. With random 4-d rows, some row often has cosine
+    # ~0.9 with k, and beta=10 then gives slot 0 only ~0.5 weight: the assert failed for 49% of random seeds.
+    memory[0, 1:, 0] = 0.0
+
     w = content_addressing(k, beta, memory)
     print(f"Content focus at slot 0: {w[0, 0].item():.4f}")
     assert w[0, 0] > 0.9

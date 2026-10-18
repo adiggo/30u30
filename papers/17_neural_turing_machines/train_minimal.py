@@ -107,8 +107,12 @@ def train():
             pass
 
     # Save weights for visualization
-    torch.save(model.state_dict(), "papers/17_neural_turing_machines/ntm_copy_final.pth")
-    print("Training complete. Weights saved to papers/17_neural_turing_machines/ntm_copy_final.pth")
+    # [PATCH 2026-10-18] save next to this script. The repo-root-relative path raised FileNotFoundError when the
+    # script was run from its own directory (as the README's quick start does), losing the trained weights.
+    import os
+    ckpt = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ntm_copy_final.pth")
+    torch.save(model.state_dict(), ckpt)
+    print(f"Training complete. Weights saved to {ckpt}")
 
 if __name__ == "__main__":
     train()

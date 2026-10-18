@@ -41,7 +41,10 @@ if __name__ == "__main__":
     
     memory = torch.randn(batch, N, M)
     memory[0, 0] = k[0] # Exact match at slot 0
-    
+    # [PATCH 2026-10-18] make the 9 distractor rows orthogonal to k. With random 4-d rows, some row often has cosine
+    # ~0.9 with k, and beta=10 then gives slot 0 only ~0.5 weight: a correct solution failed for 49% of random seeds.
+    memory[0, 1:, 0] = 0.0
+
     w = content_addressing(k, beta, memory)
     
     if w is not None:

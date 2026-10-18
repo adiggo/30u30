@@ -1,4 +1,7 @@
 import torch
+import os, sys  # [PATCH 2026-10-18] put the day directory on sys.path: run as a script, sys.path[0] is
+# exercises/ (or exercises/solutions/), so `from implementation import ...` raised ModuleNotFoundError from any cwd
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from implementation import add_coordinates
 
 

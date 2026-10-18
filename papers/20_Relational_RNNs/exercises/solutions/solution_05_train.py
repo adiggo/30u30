@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import os, sys  # [PATCH 2026-10-18] day dir (implementation.py) and exercises/ (the `solutions` package) on sys.path;
+# run as a script only exercises/solutions/ is on sys.path, so both imports raised ModuleNotFoundError
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from implementation import RelationalRNN
 from solutions.solution_04_nth_farthest import generate_nth_farthest_batch
 

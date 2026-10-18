@@ -25,7 +25,9 @@ def plot_memory_weights(weights_list, title="Memory Addressing Weighting (Read H
     plt.title(title)
     plt.colorbar(label="Addressing Weight w_t(i)")
     plt.tight_layout()
-    plt.savefig("papers/17_neural_turing_machines/addressing_focus.png")
+    # [PATCH 2026-10-18] save next to this file; the repo-root-relative path crashed when called from the day directory
+    import os
+    plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), "addressing_focus.png"))
     plt.show()
 
 def plot_recall_performance(inputs, targets, outputs, title="Copy Task: Input vs. Recall"):
@@ -51,5 +53,7 @@ def plot_recall_performance(inputs, targets, outputs, title="Copy Task: Input vs
         ax.set_ylabel("Bit Index")
     
     plt.tight_layout()
-    plt.savefig("papers/17_neural_turing_machines/recall_comparison.png")
+    # [PATCH 2026-10-18] save next to this file; the repo-root-relative path crashed when called from the day directory
+    import os
+    plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), "recall_comparison.png"))
     plt.show()

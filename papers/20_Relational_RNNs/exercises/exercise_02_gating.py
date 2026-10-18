@@ -9,9 +9,9 @@ class LSTMUpdate(nn.Module):
         
         # TODO: Define the linear layers for Forget, Input, and Candidate gates
         # Each should output a tensor of size 'state_size'
-        self.gate_f = # YOUR CODE HERE
-        self.gate_i = # YOUR CODE HERE
-        self.gate_c = # YOUR CODE HERE
+        self.gate_f = None  # YOUR CODE HERE
+        self.gate_i = None  # YOUR CODE HERE
+        self.gate_c = None  # YOUR CODE HERE
         
     def forward(self, input_vec, state):
         """
@@ -24,13 +24,15 @@ class LSTMUpdate(nn.Module):
         
         # TODO: Calculate gate activations
         # Remember: Sigmoid for f and i, Tanh for candidate
-        f = # YOUR CODE HERE
-        i = # YOUR CODE HERE
-        c = # YOUR CODE HERE
+        f = None  # YOUR CODE HERE
+        i = None  # YOUR CODE HERE
+        c = None  # YOUR CODE HERE
         
         # TODO: Compute next state
         # next_state = f * state + i * candidate
-        next_state = # YOUR CODE HERE
+        next_state = None  # YOUR CODE HERE
+        if next_state is None:  # [PATCH 2026-10-18] placeholders were `x = # ...` (SyntaxError); delete this guard once done
+            raise NotImplementedError("Exercise 2: define the three gate layers and compute f, i, c, next_state")
         
         return next_state
 
