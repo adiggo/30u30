@@ -240,18 +240,21 @@ class RegularizedLSTM:
             cs[t] = f * cs[t-1] + i * c_tilde
             
             o = sigmoid(np.dot(self.Wo, combined) + self.bo)
-            hs[t] = o * np.tanh(cs[t])
-            
-            # Dropout on hidden state
-            h_dropped, h_mask = dropout_forward(hs[t], self.dropout_keep_prob, training)
-            
-            # Layer norm on hidden state
+            hs[t] = o * np.tanh(cs[t])  # recurrent state: carried to t+1 without dropout
+
+            # [PATCH 2026-10-18] Zaremba et al. (2014) Sec. 3.2: dropout only on non-recurrent
+            # connections. The dropped (and layer-normed) copy used to overwrite hs[t], which is the
+            # recurrent input at t+1, so the recurrent connection was dropped too; with
+            # use_layer_norm=False the dropped copy was discarded, so h->output got no dropout.
+            h_out, h_mask = dropout_forward(hs[t], self.dropout_keep_prob, training)
+
+            # Layer norm on the output path only (our addition, not in the paper)
             if self.use_layer_norm:
-                hs[t], _ = layer_norm_forward(h_dropped.T, self.gamma_h.T, self.beta_h.T)
-                hs[t] = hs[t].T
-            
+                h_out, _ = layer_norm_forward(h_out.T, self.gamma_h.T, self.beta_h.T)
+                h_out = h_out.T
+
             # Output layer
-            ys[t] = np.dot(self.Why, hs[t]) + self.by
+            ys[t] = np.dot(self.Why, h_out) + self.by
             ps[t] = softmax(ys[t])
             
             # Loss

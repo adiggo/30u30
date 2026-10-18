@@ -236,16 +236,24 @@ class SequenceBatchNorm(nn.Module):
         self.register_buffer('running_mean', torch.zeros(num_features))
         self.register_buffer('running_var', torch.ones(num_features))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             x: shape (batch, time, features) or (batch, features)
+            lengths: optional valid lengths, shape (batch,); padded frames are then excluded
+                from the statistics  [PATCH 2026-10-18]
         """
         if self.training:
             # Compute mean/var over batch AND time dimensions
             if x.dim() == 3:
                 # (batch, time, features) -> stats over (batch * time, features)
                 flat = x.reshape(-1, self.num_features)
+                if lengths is not None:
+                    # [PATCH 2026-10-18] DS2 Sec. 3.2 averages "over the length of the sequence";
+                    # zero padding from pad_packed_sequence was being counted as real frames.
+                    valid = (torch.arange(x.size(1), device=x.device)[None, :]
+                             < lengths.to(x.device)[:, None])
+                    flat = flat[valid.reshape(-1)]
             else:
                 flat = x
 
@@ -380,7 +388,7 @@ class BidirectionalRNNLayer(nn.Module):
             output, _ = self.rnn(x)
 
         if self.use_batchnorm:
-            output = self.bn(output)
+            output = self.bn(output, lengths)  # [PATCH 2026-10-18] exclude padded frames from BN stats
 
         return self.activation(output)
 
@@ -596,44 +604,43 @@ def beam_search_decode(
     Returns:
         List of decoded strings (best beam for each sample)
     """
+    # [PATCH 2026-10-18] CTC prefix beam search (Graves et al. 2006; Hannun et al. 2014). The old
+    # loop keyed beams by prefix alone and kept only the best single path per prefix, so it could
+    # never emit a doubled letter ("a _ a" collapsed to "a") and did not sum over alignments the way
+    # p_ctc(y|x) in DS2 Eq. 12 requires.
     batch_size = log_probs.size(1)
     results = []
+    blank = encoder.blank_idx
 
     for b in range(batch_size):
         seq_len = lengths[b].item() if lengths is not None else log_probs.size(0)
-        probs = log_probs[:seq_len, b, :]  # (time, vocab)
+        probs = log_probs[:seq_len, b, :].detach().cpu().double().numpy()  # (time, vocab) log-probs
 
-        # Each beam: (log_prob, prefix_indices)
-        beams = [(0.0, [])]
-
+        # prefix -> [log P(prefix, last emitted = blank), log P(prefix, last emitted = non-blank)]
+        beams = {(): [0.0, -np.inf]}
         for t in range(seq_len):
             new_beams = {}
 
-            for score, prefix in beams:
-                for c in range(probs.size(-1)):
-                    new_score = score + probs[t, c].item()
+            def add(key, slot, value):
+                entry = new_beams.setdefault(key, [-np.inf, -np.inf])
+                entry[slot] = np.logaddexp(entry[slot], value)
 
-                    # CTC collapsing logic
-                    if c == encoder.blank_idx:
-                        key = tuple(prefix)
-                    elif len(prefix) > 0 and prefix[-1] == c:
-                        key = tuple(prefix)  # repeated char -> no new char
+            for prefix, (p_b, p_nb) in beams.items():
+                p_tot = np.logaddexp(p_b, p_nb)
+                add(prefix, 0, p_tot + probs[t, blank])              # blank: prefix unchanged
+                for c in range(probs.shape[1]):
+                    if c == blank:
+                        continue
+                    if prefix and prefix[-1] == c:
+                        add(prefix, 1, p_nb + probs[t, c])            # repeat w/o blank: collapses
+                        add(prefix + (c,), 1, p_b + probs[t, c])      # repeat after blank: new char
                     else:
-                        key = tuple(prefix + [c])
+                        add(prefix + (c,), 1, p_tot + probs[t, c])
+            beams = dict(sorted(new_beams.items(), key=lambda kv: np.logaddexp(*kv[1]),
+                                reverse=True)[:beam_width])
 
-                    if key not in new_beams or new_beams[key] < new_score:
-                        new_beams[key] = new_score
-
-            # Keep top beams
-            sorted_beams = sorted(
-                new_beams.items(), key=lambda x: x[1], reverse=True
-            )[:beam_width]
-            beams = [(score, list(prefix)) for prefix, score in sorted_beams]
-
-        # Best beam
-        best_prefix = beams[0][1] if beams else []
-        text = encoder.decode(best_prefix)
-        results.append(text)
+        best_prefix = max(beams.items(), key=lambda kv: np.logaddexp(*kv[1]))[0] if beams else ()
+        results.append(encoder.decode(list(best_prefix)))
 
     return results
 

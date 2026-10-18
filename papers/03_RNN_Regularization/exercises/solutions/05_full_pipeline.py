@@ -98,23 +98,25 @@ class RegularizedRNNCell:
         3. Tanh activation
         4. Dropout (training only)
         """
+        # [PATCH 2026-10-18] Zaremba et al. Sec. 3.2: dropout only on the non-recurrent input x_t.
+        # The returned h is the caller's next h_prev, so dropping h (as before) dropped the
+        # recurrent connection -- the exact thing the paper says not to do.
+        x = self.dropout(x, training=training)
+
         # Linear transformation
         # Note: W_hh @ h_prev does NOT get dropout
         # (recurrent connections preserve memory)
         h_raw = np.tanh(
-            self.W_hh @ h_prev.T + 
-            self.W_xh @ x.T + 
+            self.W_hh @ h_prev.T +
+            self.W_xh @ x.T +
             self.b_h.reshape(-1, 1)
         )
         h_raw = h_raw.T  # Back to (batch, hidden)
-        
+
         # Layer normalization
         h_norm = self.layer_norm(h_raw)
-        
-        # Dropout (training only)
-        h = self.dropout(h_norm, training=training)
-        
-        return h
+
+        return h_norm  # [PATCH 2026-10-18] recurrent state returned without dropout
     
     def get_weights(self) -> Dict[str, np.ndarray]:
         """Return all weights as dictionary."""

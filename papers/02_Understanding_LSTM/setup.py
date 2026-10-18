@@ -69,16 +69,16 @@ def run_quick_test():
         from implementation import LSTM
         
         # Create tiny LSTM
-        lstm = LSTM(input_size=5, hidden_size=8, output_size=5)
-        
+        lstm = LSTM(vocab_size=5, hidden_size=8, seq_length=5)  # [PATCH 2026-10-18] actual constructor signature
+
         # Test forward pass
         import numpy as np
         inputs = [0, 1, 2, 3, 4]
         targets = [1, 2, 3, 4, 0]
-        h = np.zeros(8)
-        C = np.zeros(8)
-        
-        loss = lstm.forward(inputs, targets, h, C)
+        h = np.zeros((8, 1))  # [PATCH 2026-10-18] (hidden_size, 1) column states
+        C = np.zeros((8, 1))
+
+        loss, _, _, _ = lstm.forward(inputs, targets, h, C)  # [PATCH 2026-10-18] forward returns a 4-tuple
         
         if loss > 0:
             print(f"OK: LSTM test passed (loss: {loss:.4f})")

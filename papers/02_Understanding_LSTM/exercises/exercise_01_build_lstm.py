@@ -96,7 +96,8 @@ class LSTMFromScratch:
         self.C_tilde_cache = []
         self.o_gates = []
         self.y_probs = []
-        
+        self.targets_cache = list(targets)  # [PATCH 2026-10-18] backward() needs the targets
+
         loss = 0.0
         
         for t, (input_idx, target_idx) in enumerate(zip(inputs, targets)):
@@ -184,7 +185,7 @@ class LSTMFromScratch:
         for t in reversed(range(len(self.inputs_cache))):
             # TODO 16: Gradient from output layer
             dy = self.y_probs[t].copy()
-            dy[targets[t]] -= 1  # Softmax + cross-entropy gradient
+            dy[self.targets_cache[t]] -= 1  # Softmax + cross-entropy gradient  # [PATCH 2026-10-18] was undefined `targets`
             
             # TODO 17: Gradient w.r.t. output weights
             dWy += None  # TODO: Implement (outer product)

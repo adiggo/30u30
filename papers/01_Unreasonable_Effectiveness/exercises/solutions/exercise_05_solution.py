@@ -72,7 +72,7 @@ def train_author_model(data, author_name, hidden_size=128, epochs=100):
     print(f"  Data size: {len(data)} characters")
     
     # Initialize RNN
-    rnn = CharRNN(vocab_size, hidden_size, vocab_size)
+    rnn = CharRNN(vocab_size, hidden_size)  # [PATCH 2026-10-18] 3rd positional arg is learning_rate, not vocab
     
     # Training loop (simplified)
     for epoch in range(epochs):
@@ -90,13 +90,13 @@ def generate_author_samples(rnn, idx_to_char, num_samples=10, length=200, temper
     for _ in range(num_samples):
         # Start with random character
         seed_idx = np.random.randint(len(idx_to_char))
-        h = np.zeros(rnn.hidden_size)
+        h = np.zeros((rnn.hidden_size, 1))  # [PATCH 2026-10-18] column vectors: 1-D h/x broadcast to (H, H)
         generated = []
-        
+
         idx = seed_idx
         for _ in range(length):
             # One-hot encode
-            x = np.zeros(rnn.vocab_size)
+            x = np.zeros((rnn.vocab_size, 1))  # [PATCH 2026-10-18] see above
             x[idx] = 1
             
             # Forward pass
@@ -106,7 +106,7 @@ def generate_author_samples(rnn, idx_to_char, num_samples=10, length=200, temper
             # Sample with temperature
             probs = np.exp(y / temperature)
             probs = probs / np.sum(probs)
-            idx = np.random.choice(range(len(probs)), p=probs)
+            idx = np.random.choice(range(len(probs)), p=probs.ravel())  # [PATCH 2026-10-18] p must be 1-D
             
             generated.append(idx_to_char[idx])
         
@@ -148,17 +148,17 @@ def extract_simple_features(text):
 def extract_rnn_features(text, rnn, char_to_idx):
     """Extract features from RNN hidden states."""
     # Process text through RNN and collect hidden states
-    h = np.zeros(rnn.hidden_size)
+    h = np.zeros((rnn.hidden_size, 1))  # [PATCH 2026-10-18] column vectors: 1-D h/x broadcast to (H, H)
     hidden_states = []
-    
+
     for char in text[:200]:  # Limit to first 200 chars
         if char in char_to_idx:
             idx = char_to_idx[char]
-            x = np.zeros(rnn.vocab_size)
+            x = np.zeros((rnn.vocab_size, 1))  # [PATCH 2026-10-18] see above
             x[idx] = 1
-            
+
             h = np.tanh(np.dot(rnn.Wxh, x) + np.dot(rnn.Whh, h) + rnn.bh)
-            hidden_states.append(h.copy())
+            hidden_states.append(h.ravel().copy())  # [PATCH 2026-10-18] store (H,) rows -> (n, H) array
     
     if not hidden_states:
         return np.zeros(rnn.hidden_size)

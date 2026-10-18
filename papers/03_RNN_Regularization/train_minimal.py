@@ -184,7 +184,9 @@ def main():
         # Early stopping
         should_continue = early_stop.check(val_loss, epoch)
         
-        status = "[ok] IMPROVED" if val_loss < early_stop.best_loss else "[FAIL] No improve"
+        # [PATCH 2026-10-18] check() already set best_loss = val_loss on improvement, so the old
+        # `val_loss < best_loss` test was always False and every epoch printed "No improve".
+        status = "[ok] IMPROVED" if early_stop.no_improve_count == 0 else "[FAIL] No improve"
         print(f"{epoch:<6} {train_loss:<12.4f} {val_loss:<12.4f} {status:<20}")
         
         if not should_continue:

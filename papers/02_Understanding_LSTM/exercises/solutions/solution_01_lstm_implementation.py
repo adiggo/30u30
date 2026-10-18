@@ -64,7 +64,8 @@ class LSTMFromScratch:
         self.C_tilde_cache = []
         self.o_gates = []
         self.y_probs = []
-        
+        self.targets_cache = list(targets)  # [PATCH 2026-10-18] backward() needs the targets
+
         loss = 0.0
         
         for t, (input_idx, target_idx) in enumerate(zip(inputs, targets)):
@@ -157,7 +158,7 @@ class LSTMFromScratch:
             # SOLUTION 16: Gradient from softmax + cross-entropy
             # Convenient property: d(softmax + cross-entropy) = probs - 1(correct)
             dy = self.y_probs[t].copy()
-            dy[targets[t]] -= 1
+            dy[self.targets_cache[t]] -= 1  # [PATCH 2026-10-18] was undefined name `targets` (NameError)
             
             # SOLUTION 17: Gradients for output weights
             # dL/dW = dL/dy * dy/dW = dy * h_t^T (outer product)

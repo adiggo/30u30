@@ -149,7 +149,9 @@ def test_layer_norm_forward():
     # Check mean is ~0
     assert np.abs(np.mean(out)) < 1e-6, f"Mean should be ~0, got {np.mean(out)}"
     # Check std is ~1
-    assert np.abs(np.std(out) - 1) < 1e-6, f"Std should be ~1, got {np.std(out)}"
+    # [PATCH 2026-10-18] with eps=1e-5 inside sqrt(var+eps) and var=2, a correct answer has
+    # std = sqrt(2/2.00001) = 1 - 2.5e-6, so the old 1e-6 tolerance failed every correct solution.
+    assert np.abs(np.std(out) - 1) < 1e-4, f"Std should be ~1, got {np.std(out)}"
     print("  [ok] Test 1: Basic normalization works (mean=0, std=1)")
     
     # Test 2: Batch normalization (2D)

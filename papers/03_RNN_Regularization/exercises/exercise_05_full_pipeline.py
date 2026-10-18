@@ -34,9 +34,9 @@ class RegularizedRNNCell:
     A single RNN cell with dropout and layer normalization.
     
     Architecture:
+        x_t = dropout(x_t)  # Only during training!  [PATCH 2026-10-18] never on the recurrent h_t
         h_t = tanh(W_hh @ h_{t-1} + W_xh @ x_t + b_h)
         h_t = layer_norm(h_t)
-        h_t = dropout(h_t)  # Only during training!
     """
     
     def __init__(
@@ -126,18 +126,20 @@ class RegularizedRNNCell:
         Returns:
             h: New hidden state (batch_size, hidden_size)
         """
+        # TODO 8: Apply dropout to the INPUT only (only during training!)
+        # [PATCH 2026-10-18] the returned h becomes the next h_prev, so dropping h would drop the
+        # recurrent connection, which Zaremba et al. (2014) Sec. 3.2 says not to do.
+        # x = self.dropout(x, training=training)
+
         # TODO 6: Compute raw hidden state
         # h_raw = np.tanh(self.W_hh @ h_prev.T + self.W_xh @ x.T + self.b_h.reshape(-1, 1))
         # h_raw = h_raw.T  # Back to (batch_size, hidden_size)
-        
+
         # TODO 7: Apply layer normalization
         # h_norm = self.layer_norm(h_raw)
-        
-        # TODO 8: Apply dropout (only during training!)
-        # h = self.dropout(h_norm, training=training)
-        
+
         # TODO 9: Return final hidden state
-        # return h
+        # return h_norm
         
         pass  # Remove this when you implement
     

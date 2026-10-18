@@ -25,7 +25,7 @@ import sys
 sys.path.append('..')
 
 from implementation import CharRNN
-from train_minimal import load_data
+from implementation import prepare_data  # [PATCH 2026-10-18] train_minimal has no load_data (ImportError)
 
 
 def softmax_with_temperature(logits, temperature=1.0):

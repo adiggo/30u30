@@ -47,7 +47,7 @@ def train_with_logging(rnn, data, char_to_idx, num_iterations=1000):
     seq_length = 25
     learning_rate = 0.01
     
-    h_prev = np.zeros(rnn.hidden_size)
+    h_prev = np.zeros((rnn.hidden_size, 1))  # [PATCH 2026-10-18] 1-D state broadcasts to (H, H) in CharRNN
     
     print("Training with loss logging...")
     

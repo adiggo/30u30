@@ -35,7 +35,9 @@ def train(model, data, char_to_idx, idx_to_char, epochs=100, print_every=10):
     p = 0  # Iteration counter
     hprev = np.zeros((model.hidden_size, 1))  # Initial hidden state
     
-    smooth_loss = -np.log(1.0 / model.vocab_size) * model.seq_length  # Expected loss at start
+    # [PATCH 2026-10-18] model.loss() returns the per-character mean, so the moving average must start
+    # at the per-character value; the old per-sequence start (x seq_length) dominated the printed loss.
+    smooth_loss = -np.log(1.0 / model.vocab_size)  # Expected per-character loss at start
     
     print(f"\nTraining for {epochs} epochs...")
     print(f"Initial expected loss: {smooth_loss:.2f}")

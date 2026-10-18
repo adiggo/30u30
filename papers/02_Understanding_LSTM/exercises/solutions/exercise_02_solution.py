@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import sys
 sys.path.append('..')
 
-from lstm_implementation import LSTM
+from implementation import LSTM  # [PATCH 2026-10-18] module 'lstm_implementation' does not exist
 
 
 def capture_gate_activations(lstm, text, char_to_idx):
@@ -22,8 +22,8 @@ def capture_gate_activations(lstm, text, char_to_idx):
         Each contains a list of activations over time.
     """
     # Initialize states
-    h = np.zeros(lstm.hidden_size)
-    c = np.zeros(lstm.hidden_size)
+    h = np.zeros((lstm.hidden_size, 1))  # [PATCH 2026-10-18] column vectors: implementation.LSTM biases are
+    c = np.zeros((lstm.hidden_size, 1))  # (H, 1), so 1-D states broadcast to (H, H) and crash at step 2
     
     # Storage for activations
     activations = {
@@ -41,11 +41,11 @@ def capture_gate_activations(lstm, text, char_to_idx):
             continue
         
         idx = char_to_idx[char]
-        x = np.zeros(lstm.vocab_size)
+        x = np.zeros((lstm.vocab_size, 1))  # [PATCH 2026-10-18] column vector (see above)
         x[idx] = 1
-        
+
         # Concatenate input and hidden state
-        combined = np.concatenate([h, x])
+        combined = np.vstack([h, x])  # [PATCH 2026-10-18] (H+V, 1), same layout as implementation.LSTM
         
         # Compute gates
         f = sigmoid(np.dot(lstm.Wf, combined) + lstm.bf)  # Forget gate
