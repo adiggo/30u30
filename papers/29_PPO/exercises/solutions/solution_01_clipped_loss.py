@@ -46,7 +46,9 @@ def clipped_surrogate_loss(
 if __name__ == "__main__":
     import sys
     import os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # [PATCH 2026-10-18] two dirname()s put exercises/ on the path, so `import exercises...`
+    # raised ModuleNotFoundError; the day directory (three levels up) is needed, as in solutions 02/03.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from exercises.exercise_01_clipped_loss import test_clipped_surrogate_loss
 
     # Monkey-patch the exercise module to use our solution

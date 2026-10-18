@@ -8,9 +8,10 @@ import math
 
 def predict_loss(n_params):
     """
-    L(N) = 1.69 * N^-0.076
+    L(N) = (N_c / N)^alpha_N, N_c = 8.8e13, alpha_N = 0.076 (Kaplan et al. 2020, Eq. 1.1)
     """
-    return 1.69 * math.pow(n_params, -0.076)
+    # [PATCH 2026-10-18] was 1.69 * N^-0.076 (not a law from the paper; gave 0.24 nats for GPT-3)
+    return math.pow(8.8e13 / n_params, 0.076)
 
 if __name__ == "__main__":
     n_gpt3 = 175e9

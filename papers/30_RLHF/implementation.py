@@ -39,7 +39,7 @@ class RewardModel(nn.Module):
     def forward(self, obs):
         return self.net(obs)
 
-def compute_preference_loss(reward_model, segment1, segment2, label):
+def compute_preference_loss(reward_model, segment1, segment2, label, mask1=None, mask2=None):
     """
     Computes the cross-entropy loss for pairwise preferences (Eq 2 in Christiano et al.).
     
@@ -49,6 +49,7 @@ def compute_preference_loss(reward_model, segment1, segment2, label):
         segment2: Tensor of shape (batch, len, obs_dim) - the second trajectory segment.
         label: Tensor of shape (batch,) - 0 if segment1 is preferred, 1 if segment2 is preferred.
                (Or soft labels, i.e., probability that segment2 is preferred).
+        mask1, mask2: Optional (batch, len) tensors, 1 for real timesteps and 0 for padding.
     
     Returns:
         loss: Scalar tensor.
@@ -58,6 +59,12 @@ def compute_preference_loss(reward_model, segment1, segment2, label):
     # Shape: (batch, len, 1)
     r1 = reward_model(segment1) 
     r2 = reward_model(segment2)
+    # [PATCH 2026-10-18] zero-padded timesteps must not add r_hat(0) to the segment sums;
+    # without the mask, short (worse) segments get padding reward and the RM cannot separate them.
+    if mask1 is not None:
+        r1 = r1 * mask1.unsqueeze(-1)
+    if mask2 is not None:
+        r2 = r2 * mask2.unsqueeze(-1)
     
     # 2. Sum rewards over the segment (Section 2.1)
     # Shape: (batch,)
@@ -70,6 +77,17 @@ def compute_preference_loss(reward_model, segment1, segment2, label):
     # Logits for cross_entropy are just the reward sums! 
     # Because softmax([r1_sum, r2_sum]) gives exactly the Bradley-Terry probabilities.
     logits = torch.stack([r1_sum, r2_sum], dim=1) # (batch, 2)
+
+    # [PATCH 2026-10-18] the docstring promised soft labels but cross_entropy(logits, float_label)
+    # raises; a float label is P(segment2 preferred), and 0.5 is a tie (mu uniform, Sec 2.2.2).
+    if label.is_floating_point():
+        loss = F.cross_entropy(logits, torch.stack([1.0 - label, label], dim=1))
+        with torch.no_grad():
+            decided = label != 0.5
+            preds = torch.argmax(logits, dim=1)
+            accuracy = ((preds == label.round().long())[decided].float().mean()
+                        if decided.any() else torch.tensor(float('nan')))
+        return loss, accuracy.item()
     
     # 4. Cross-entropy loss (Eq 2)
     loss = F.cross_entropy(logits, label)
@@ -98,6 +116,10 @@ class SyntheticOracle:
         """
         sum1 = np.sum(segment1_rewards)
         sum2 = np.sum(segment2_rewards)
+        # [PATCH 2026-10-18] ties were labelled "segment 2 better"; the paper's oracle outputs
+        # indifference (footnote 4), stored as a uniform label (Sec 2.2.2).
+        if sum1 == sum2:
+            return 0.5
         return 0 if sum1 > sum2 else 1
 
 class PPOAgent(nn.Module):
@@ -203,12 +225,16 @@ class RLHF_Trainer:
             
     def train_reward_model(self, epochs=1, batch_size=32):
         """Phase 3: Train Reward Model on labeled pairs."""
-        if len(self.preference_buffer) < batch_size:
-            return 0.0, 0.0 # Not enough data
+        # [PATCH 2026-10-18] was `return 0.0, 0.0` when the buffer held < batch_size pairs: the RM
+        # silently did not train for the first cycles and "0% accuracy" was printed.
+        if len(self.preference_buffer) == 0:
+            return float('nan'), float('nan')
+        batch_size = min(batch_size, len(self.preference_buffer))
             
         total_loss = 0
         total_acc = 0
         updates = 0
+        acc_updates = 0  # [PATCH 2026-10-18]
         
         indices = np.arange(len(self.preference_buffer))
         
@@ -222,7 +248,8 @@ class RLHF_Trainer:
                 
                 # Pad sequences to same length for batching (or just use fixed length)
                 # Here we assume fixed length for simplicity or just truncate/pad
-                max_len = max(len(b[0]) for b in batch) # seg1 length
+                # [PATCH 2026-10-18] was the max over seg1 only, so longer seg2s were truncated
+                max_len = max(max(len(b[0]), len(b[1])) for b in batch)
                 
                 # Helper to pad
                 def pad(arr, length):
@@ -232,21 +259,34 @@ class RLHF_Trainer:
                     res[:l] = arr[:l]
                     return res
 
+                # [PATCH 2026-10-18] masks mark real timesteps (1) vs padding (0)
+                def valid(arr, length):
+                    m = np.zeros(length, dtype=np.float32)
+                    m[:min(len(arr), length)] = 1.0
+                    return m
+
                 s1 = torch.tensor(np.stack([pad(b[0], max_len) for b in batch]), dtype=torch.float32)
                 s2 = torch.tensor(np.stack([pad(b[1], max_len) for b in batch]), dtype=torch.float32)
-                labels = torch.tensor([b[2] for b in batch], dtype=torch.long)
+                m1 = torch.tensor(np.stack([valid(b[0], max_len) for b in batch]))
+                m2 = torch.tensor(np.stack([valid(b[1], max_len) for b in batch]))
+                # [PATCH 2026-10-18] float labels so a tie (0.5) is not truncated to 0
+                labels = torch.tensor([float(b[2]) for b in batch], dtype=torch.float32)
                 
-                loss, acc = compute_preference_loss(self.reward_model, s1, s2, labels)
+                loss, acc = compute_preference_loss(self.reward_model, s1, s2, labels, m1, m2)
                 
                 self.rm_opt.zero_grad()
                 loss.backward()
                 self.rm_opt.step()
                 
                 total_loss += loss.item()
-                total_acc += acc
+                # [PATCH 2026-10-18] accuracy is over decided pairs only; skip all-tie batches
+                if not np.isnan(acc):
+                    total_acc += acc
+                    acc_updates += 1
                 updates += 1
                 
-        return total_loss / (updates + 1e-8), total_acc / (updates + 1e-8)
+        return (total_loss / (updates + 1e-8),
+                total_acc / acc_updates if acc_updates else float('nan'))
 
     def train_policy_ppo(self, steps=1000):
         """Phase 4: Optimize Policy using Learned Reward (PPO)."""
@@ -257,6 +297,7 @@ class RLHF_Trainer:
         rollout_logprobs = []
         rollout_vals = []
         rollout_learned_rewards = []
+        rollout_dones = []  # [PATCH 2026-10-18] episode ends, needed by GAE below
         
         # 1. Collect Data using Learned Reward
         for _ in range(steps):
@@ -274,6 +315,7 @@ class RLHF_Trainer:
             
             next_obs, _, done, truncated, _ = self.env.step(action.item())
             obs = next_obs
+            rollout_dones.append(float(done or truncated))
             
             if done or truncated:
                 obs, _ = self.env.reset()
@@ -285,13 +327,18 @@ class RLHF_Trainer:
         gamma = 0.99
         lam = 0.95
         
-        # Append dummy last value
-        rollout_vals.append(0) 
+        # [PATCH 2026-10-18] bootstrap from V(last obs) instead of a dummy 0 (a fake episode end)
+        with torch.no_grad():
+            rollout_vals.append(self.policy.critic(torch.tensor(obs, dtype=torch.float32)).item())
         advs = np.zeros(steps)
         
         for t in reversed(range(steps)):
-            delta = rollout_learned_rewards[t] + gamma * rollout_vals[t+1] - rollout_vals[t]
-            gae = delta + gamma * lam * gae
+            # [PATCH 2026-10-18] mask at episode ends: without it GAE bootstraps through env.reset(),
+            # so falling over looks free; in CartPole that removes the only signal (even the true
+            # +1 reward then trains the policy to fall faster).
+            nonterminal = 1.0 - rollout_dones[t]
+            delta = rollout_learned_rewards[t] + gamma * rollout_vals[t+1] * nonterminal - rollout_vals[t]
+            gae = delta + gamma * lam * nonterminal * gae
             advs[t] = gae
             
         returns = torch.tensor(advs + rollout_vals[:-1], dtype=torch.float32)

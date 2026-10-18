@@ -64,13 +64,13 @@ def train(env_name, total_steps, segment_length, pairs_per_batch, rm_epochs, ppo
         # 2. Train Reward Model
         print("Training Reward Model...")
         rm_loss, rm_acc = trainer.train_reward_model(epochs=rm_epochs)
-        rm_accuracies.append(rm_acc)
+        rm_accuracies.append(float(rm_acc))  # [PATCH 2026-10-18] plain floats: torch>=2.6 torch.load(weights_only=True) rejects numpy scalars, so visualization.py could not load the results
         print(f"RM Loss: {rm_loss:.4f} | RM Accuracy: {rm_acc:.2%}")
         
         # 3. Train Policy
         print("Optimizing Policy (PPO)...")
         mean_learned_reward = trainer.train_policy_ppo(steps=ppo_epochs * 200) # Arbitrary steps per cycle
-        learned_rewards.append(mean_learned_reward)
+        learned_rewards.append(float(mean_learned_reward))  # [PATCH 2026-10-18] see above
         
         # Evaluate Policy (True Reward)
         eval_rewards = []
@@ -88,7 +88,7 @@ def train(env_name, total_steps, segment_length, pairs_per_batch, rm_epochs, ppo
             eval_rewards.append(total_r)
         
         mean_true = np.mean(eval_rewards)
-        true_rewards.append(mean_true)
+        true_rewards.append(float(mean_true))  # [PATCH 2026-10-18] see above
         print(f"Policy True Reward: {mean_true:.1f} (Learned: {mean_learned_reward:.3f})")
         
     env.close()
@@ -106,7 +106,9 @@ def train(env_name, total_steps, segment_length, pairs_per_batch, rm_epochs, ppo
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RLHF Training Script (Day 30)")
     parser.add_argument("--env", type=str, default="CartPole-v1", help="Gym environment ID")
-    parser.add_argument("--steps", type=int, default=10000, help="Total environment steps roughly")
+    # [PATCH 2026-10-18] default raised from 10000: with the GAE/reward-model fixes, 10 cycles is
+    # still too short to show the policy improving; 60000 steps (~80 s on CPU) does (true reward ~190).
+    parser.add_argument("--steps", type=int, default=60000, help="Total environment steps roughly")
     parser.add_argument("--segment_len", type=int, default=50, help="Length of video clips (dataset generation)")
     parser.add_argument("--pairs", type=int, default=10, help="Number of preference pairs per cycle")
     parser.add_argument("--rm_epochs", type=int, default=5, help="Epochs to train RM per cycle")
