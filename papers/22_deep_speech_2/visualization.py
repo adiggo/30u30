@@ -19,7 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import matplotlib
-    matplotlib.use('Agg')
+    # [PATCH 2026-10-18] Forcing Agg on import switched a notebook's inline backend off, so
+    # figures never displayed; use Agg only outside Jupyter (scripts save PNGs either way).
+    if 'ipykernel' not in sys.modules:
+        matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
 except ImportError:

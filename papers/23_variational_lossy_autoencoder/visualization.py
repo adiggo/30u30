@@ -21,7 +21,10 @@ from typing import Dict, List
 
 try:
     import matplotlib
-    matplotlib.use('Agg')
+    # [PATCH 2026-10-18] Forcing Agg on import switched a notebook's inline backend off, so
+    # figures never displayed; use Agg only outside Jupyter (scripts save PNGs either way).
+    if 'ipykernel' not in sys.modules:
+        matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
 except ImportError:
