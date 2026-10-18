@@ -76,8 +76,12 @@ class HuffmanCoder:
             return
 
         if node.char is not None:
-            self.codes[node.char] = current_code
-            self.reverse_codes[current_code] = node.char
+            # [PATCH 2026-10-18] With a one-symbol alphabet the root is itself a leaf and got
+            # the empty code, so encode("a" * 500) == "" and could not be decoded. A prefix
+            # code needs at least 1 bit per symbol, so the lone symbol gets "0".
+            code = current_code or "0"
+            self.codes[node.char] = code
+            self.reverse_codes[code] = node.char
             return
 
         self._generate_codes(node.left, current_code + "0")
