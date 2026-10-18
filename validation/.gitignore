@@ -1,0 +1,8 @@
+# Files the validation scripts generate (plots, checkpoints, results). Never commit them.
+outputs/
+*.png
+*.pt
+*.pth
+*.pkl
+*.json
+__pycache__/
