@@ -50,6 +50,12 @@ def coarse_grain(grid: np.ndarray, grain_size: int) -> np.ndarray:
     We define 'nearby' cells as those within a g x g square centered at the
     cell in question."
 
+    [PATCH 2026-10-18] Deviation, previously unlabelled: the paper's window slides
+    (one centred g x g average per cell, output n x n); this code averages
+    NON-overlapping blocks, output (n//g) x (n//g) -- 10 x 10 for the default
+    g = n//10 at every n. That is why max complexity here does not grow with n
+    (paper Fig. 7 reports ~linear growth).
+
     Returns a float array with values in [0, 1].
     """
     n = grid.shape[0]
@@ -262,6 +268,18 @@ class CoffeeAutomaton:
             cols = cols[diff]
             nr = nr[diff]
             nc = nc[diff]
+
+            # [PATCH 2026-10-18] Pairs drawn in one batch can share a cell; swapping
+            # them simultaneously with fancy indexing is then not a permutation and
+            # creates/destroys cream (a 50x50 run drifted from 1250 to 1208-1342
+            # particles). Keep only pairs whose cells occur in no other pair, so each
+            # batch is a set of disjoint swaps and the particle count is conserved.
+            a = rows * n + cols
+            b = nr * n + nc
+            cells, counts = np.unique(np.concatenate([a, b]), return_counts=True)
+            shared = cells[counts > 1]
+            keep = ~(np.isin(a, shared) | np.isin(b, shared))
+            rows, cols, nr, nc = rows[keep], cols[keep], nr[keep], nc[keep]
 
             # Swap
             if len(rows) > 0:

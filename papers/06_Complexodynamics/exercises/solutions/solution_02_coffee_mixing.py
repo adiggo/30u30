@@ -84,7 +84,9 @@ if __name__ == "__main__":
     print("=" * 40)
     print()
 
-    snapshots = run_and_snapshot()
+    # [PATCH 2026-10-18] the default 5000 x 20 swaps leaves top-half fraction 0.766, failing
+    # the 0.3-0.7 mixing assertion below; 20000 steps gives 0.578 (seed 42).
+    snapshots = run_and_snapshot(n_steps=20000)
     print(f"Collected {len(snapshots)} snapshots")
 
     # Verify initial state

@@ -166,7 +166,11 @@ class PatternSequence(Environment):
         # The 'Truth' of the environment is the next element in the pattern
         correct_next = self.pattern[(self.idx + 1) % len(self.pattern)]
         correct = action == correct_next
-        reward = 1.0 if correct else 0.0
+        # [PATCH 2026-10-18] 1.0 per correct guess made an episode's return up to 10, so
+        # V_mu > 1 and the "Upsilon" printed 1.25 / 1.16. Legg's measure requires
+        # reward-summable environments (total reward <= 1, thesis Sec. 4.1, p. 78);
+        # 0.1 per step over the 10-step episode keeps V_mu in [0, 1].
+        reward = 0.1 if correct else 0.0
         
         self.idx += 1
         done = self.idx >= 10 # 10 steps of induction
@@ -341,8 +345,10 @@ class PredictiveAgent(Agent):
         
         # Exploration: Vital for discovering the environment's 'program'.
         if np.random.random() < 0.1:
-            return np.random.randint(0, self.actions)
-            
+            # [PATCH 2026-10-18] was `return randint(...)` without recording the action, so
+            # observe() credited this step's reward/transition to the previous greedy action.
+            best_action = np.random.randint(0, self.actions)
+
         self.last_obs = state
         self.last_action = best_action
         return best_action

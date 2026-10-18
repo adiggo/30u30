@@ -159,12 +159,14 @@ if __name__ == "__main__":
         if i < 5:
             print(f"  Step {i}: Saw {prev_obs}, Predicted {action}, Got {obs} | Reward: {rew}")
 
-    print(f"\n  Final Total Reward: {total_reward} / {steps}")
+    # [PATCH 2026-10-18] PatternSequence now pays 0.1 per correct guess (reward-summable,
+    # Legg Sec. 4.1), so the maximum over `steps` steps is 0.1 * steps and the bar is 1.5 (was 15).
+    print(f"\n  Final Total Reward: {total_reward:.1f} / {0.1 * steps:.1f}")
     
     # A perfect predictive agent should miss the first few steps while learning
     # length of pattern = 3. Learning 0->1, 1->2, 2->0 takes 3-4 steps.
     # threshold = 20 - 4 = 16.
-    if total_reward >= 15:
+    if total_reward >= 1.5 - 1e-9:
         print("  [PASS] Agent induced the environment's program successfully.")
     else:
         print(f"  [FAIL] Agent failed to recognize the pattern. Reward: {total_reward}")

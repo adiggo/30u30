@@ -211,6 +211,7 @@ def plot_compressor_comparison(grid_size: int = 50, total_steps: int = 100000,
     similar complexity curves.
     """
     import bz2
+    import gzip  # [PATCH 2026-10-18] gzip.compress is used below but was never imported (NameError)
     import lzma
 
     # Run simulation once, collect grids
