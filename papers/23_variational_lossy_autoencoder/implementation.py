@@ -160,7 +160,11 @@ class MADE(nn.Module):
             self.m[l] = np.random.randint(0, self.input_dim - 1, size=layers[l].out_features)
         
         # 2. Assign ranks to output units (must be 1:1 or N:1 mapping to input dim)
-        self.m[L] = np.repeat(np.arange(self.input_dim), layers[L].out_features // self.input_dim)
+        # [PATCH 2026-10-18] IAFBlock splits the outputs with torch.chunk into contiguous halves
+        # (mu, log_sigma). np.repeat gave degrees [0,0,1,1,...], so log_sigma_i had degree
+        # (D+i)//2 and depended on z_j for j >= i: Jacobian not triangular, sum(log sigma) not the
+        # log-determinant. np.tile gives each half the degrees [0..D-1].
+        self.m[L] = np.tile(np.arange(self.input_dim), layers[L].out_features // self.input_dim)
 
         # 3. Apply masks to each layer
         layer_idx = 0
@@ -277,7 +281,13 @@ class VLAE(nn.Module):
             for flow in self.flow_steps:
                 z_flow, log_det = flow(z_flow)
                 log_det_total += log_det
-        
+            # [PATCH 2026-10-18] AF prior (paper Sec. 3.2): the flow maps z to eps = z_flow, so
+            # log p(z) = log N(z_flow; 0, I) + log|det dz_flow/dz| = log N(z_flow) + sum log sigma.
+            # loss_function previously used log N(z) - sum log sigma: not a normalised density, and
+            # unbounded below as sigma -> 0. The 5th output is now the flow's correction to
+            # log N(z; 0, I) (zero without flow), which loss_function adds.
+            log_det_total = log_det_total - 0.5 * (z_flow ** 2).sum(1) + 0.5 * (z ** 2).sum(1)
+
         # 3. Decode with restricted receptive field
         # Conditionally project z onto the spatial grid
         h_latent = z.view(z.size(0), z.size(1), 1, 1).expand(-1, -1, x.size(2), x.size(3))
@@ -307,7 +317,9 @@ def loss_function(logits: torch.Tensor, x: torch.Tensor, mu: torch.Tensor,
     # Start with base log p(z_base) = N(0, I)
     # log p(z) = log p(base) - log |det Jacobian|
     log_p_base = -0.5 * torch.sum(np.log(2*np.pi) + torch.pow(z, 2))
-    log_p = log_p_base - log_det.sum()
+    # [PATCH 2026-10-18] log_det is the flow-prior correction returned by VLAE.forward
+    # (log p(z) - log N(z; 0, I)); it is added, not subtracted.
+    log_p = log_p_base + log_det.sum()
     
     kl_loss = (log_q - log_p).sum()
     

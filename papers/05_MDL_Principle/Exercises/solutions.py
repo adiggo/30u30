@@ -195,9 +195,11 @@ def solution_prequential_model_selection(
     Select best degree using prequential MDL.
     """
     scores = {}
-    
+
+    # [PATCH 2026-10-18] Code the same points under every model (common start index);
+    # the per-degree default start (degree+2) made the totals incomparable.
     for degree in range(max_degree + 1):
-        scores[degree] = solution_prequential_mdl(x, y, degree)
+        scores[degree] = solution_prequential_mdl(x, y, degree, start_index=max_degree + 2)
     
     best_degree = min(scores, key=scores.get)
     

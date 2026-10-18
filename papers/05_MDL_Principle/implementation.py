@@ -347,7 +347,9 @@ def prequential_mdl_polynomial(
             
             total_code_length += code_length
             
-        except (np.linalg.LinAlgError, np.RankWarning):
+        # [PATCH 2026-10-18] np.RankWarning was removed in NumPy 2.0; evaluating this except
+        # clause raised AttributeError whenever polyfit failed. It lives in np.exceptions.
+        except (np.linalg.LinAlgError, getattr(np, "exceptions", np).RankWarning):  # works on NumPy 1.x and 2.x
             total_code_length += 100  # Penalty for numerical issues
     
     return total_code_length
@@ -377,13 +379,18 @@ def prequential_model_selection(
         Dictionary with best_degree, scores, etc.
     """
     scores = {}
-    
+
+    # [PATCH 2026-10-18] With the default start_index=degree+2 each model coded a different
+    # number of points (48 for degree 0 ... 38 for degree 10), so totals were not comparable,
+    # and low degrees paid for early near-zero-sigma predictions the high degrees skipped.
+    # A prequential code length covers the same data for every model: use one start index.
+    start = max_degree + 2
     for degree in range(max_degree + 1):
-        scores[degree] = prequential_mdl_polynomial(x, y, degree)
-    
+        scores[degree] = prequential_mdl_polynomial(x, y, degree, start_index=start)
+
     best_degree = min(scores, key=scores.get)
     coefficients = np.polyfit(x, y, best_degree)
-    
+
     return {
         'best_degree': best_degree,
         'scores': scores,

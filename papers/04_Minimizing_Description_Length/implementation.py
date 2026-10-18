@@ -324,6 +324,54 @@ class MDLNetwork:
         return model
 
 
+# [PATCH 2026-10-18] Exercises 02-05 do `from implementation import BayesianLinearNetwork`,
+# which did not exist (ImportError before any exercise code ran). Minimal multi-layer wrapper
+# around BayesianLinear with exactly the API the exercise hints use; same maths as MDLNetwork
+# and train_minimal.py (MSE data term, KL to N(0,1) scaled by 1/N, plain SGD).
+class BayesianLinearNetwork:
+    """Stack of BayesianLinear layers with ReLU in between."""
+
+    def __init__(self, input_dim, hidden_dims, output_dim, kl_weight=0.01):
+        dims = [input_dim] + list(hidden_dims) + [output_dim]
+        self.layers = [BayesianLinear(a, b) for a, b in zip(dims[:-1], dims[1:])]
+        self.kl_weight = kl_weight
+
+    def forward(self, x):
+        self.hidden = []
+        h = x
+        for i, layer in enumerate(self.layers):
+            h = layer.forward(h)
+            if i < len(self.layers) - 1:
+                h = relu(h)
+                self.hidden.append(h)
+        return h
+
+    def compute_kl_divergence(self):
+        return sum(layer.kl_divergence() for layer in self.layers)
+
+    def train(self, X, y, epochs=500, lr=0.01, verbose=False):
+        y = np.asarray(y).reshape(len(X), -1)
+        n = len(X)
+        losses = []
+        for epoch in range(epochs):
+            preds = self.forward(X)
+            kl = self.compute_kl_divergence() / n
+            losses.append(np.mean((preds - y) ** 2) + self.kl_weight * kl)
+            d = 2 * (preds - y) / preds.size
+            for i in reversed(range(len(self.layers))):
+                d = self.layers[i].backward(d)
+                if i > 0:
+                    d[self.hidden[i - 1] <= 0] = 0
+            c = self.kl_weight / n
+            for layer in self.layers:
+                for p in ('w_mu', 'b_mu', 'w_rho', 'b_rho'):
+                    step = layer.grads['nll_' + p] + c * layer.grads['kl_' + p]
+                    setattr(layer, p, getattr(layer, p) - lr * step)
+            if verbose and epoch % max(1, epochs // 10) == 0:
+                print(f"epoch {epoch}: loss {losses[-1]:.4f}")
+        return losses
+
+
 if __name__ == "__main__":
     print("MDL / Bayesian Network Implementation")
     print("=" * 60)
