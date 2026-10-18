@@ -10,8 +10,12 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from scipy.spatial import ConvexHull as ScipyConvexHull
+import os
 import sys
-sys.path.append('..')
+# [PATCH 2026-10-18] was sys.path.append('..'), which resolves against the *current
+# directory*: run from the day folder (or from solutions/) the import of
+# implementation.py failed with ModuleNotFoundError. Resolve relative to this file.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 from implementation import ReadProcessWrite
 
 
@@ -49,7 +53,9 @@ def train_convex_hull():
         lengths = torch.full((points.size(0),), 10, device=device)
         _, log_probs, _ = model(points, lengths, 10, teacher_forcing=targets)
         
-        loss = -log_probs.gather(1, targets).mean()
+        # [PATCH 2026-10-18] log_probs already holds log p(target_t) per step (teacher
+        # forcing); gather(1, targets) re-indexed the step axis by pointer values.
+        loss = -log_probs.mean()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

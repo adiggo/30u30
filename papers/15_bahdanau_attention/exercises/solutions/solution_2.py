@@ -119,8 +119,12 @@ class BidirectionalEncoder(nn.Module):
         # Handle hidden state
         # hidden shape: (num_layers * 2, batch, hidden_size)
         # Separate forward and backward
-        hidden = hidden[:, sorted_indices, :]  # First sort
-        hidden = hidden[:, unsort_indices, :]  # Then unsort
+        # [PATCH 2026-10-18] The GRU already returns `hidden` in sorted order
+        # (enforce_sorted=True), so only the unsort is needed. The original extra
+        # `hidden[:, sorted_indices, :]` made the two permutations cancel, leaving
+        # hidden in sorted order: each decoder was initialised from another
+        # example's encoder state whenever the batch was not pre-sorted by length.
+        hidden = hidden[:, unsort_indices, :]  # Unsort to original batch order
         
         # Reshape: (num_layers, 2, batch, hidden_size)
         hidden = hidden.view(self.num_layers, 2, batch_size, self.hidden_size)

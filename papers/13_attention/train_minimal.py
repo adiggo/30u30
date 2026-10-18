@@ -155,8 +155,10 @@ class SGD:
 class SimpleTransformer:
     """
     A simplified Transformer for training demos.
-    
-    Uses numerical gradients for simplicity (not efficient, but educational).
+
+    # [PATCH 2026-10-18] Was: "Uses numerical gradients for simplicity". No
+    # gradients (numerical or analytic) exist anywhere in this script; this
+    # wrapper is forward-only.
     """
     
     def __init__(self, vocab_size: int, d_model: int = 64, n_heads: int = 4,
@@ -207,10 +209,13 @@ def train_epoch(
     lr: float = 0.001
 ) -> Dict[str, float]:
     """
-    Train for one epoch using simple gradient estimation.
-    
-    Note: This uses a simplified training approach for educational purposes.
-    Real implementations use automatic differentiation.
+    Run one epoch of forward passes and report loss/accuracy.
+
+    # [PATCH 2026-10-18] The original docstring claimed "simple gradient
+    # estimation", but no gradient is computed and no optimizer step is taken
+    # (the SGD class below is never used and `lr` is ignored): the NumPy model
+    # has no backward pass, so parameters never change and the loss stays at
+    # chance level (~ln(vocab_size)). Say so instead of implying training.
     """
     model.train()
     
@@ -422,6 +427,12 @@ def main():
     
     # Training loop
     print("\nTraining...")
+    # [PATCH 2026-10-18] Make the no-op explicit: train_epoch() only runs
+    # forward passes (no backward pass exists for this NumPy model), so the
+    # numbers below are those of an untrained, randomly initialised model.
+    print("NOTE: forward-only demo -- no gradients are computed and no weights are "
+          "updated,\n      so loss stays near ln(vocab_size) = "
+          f"{np.log(args.vocab_size):.3f} and predictions are untrained.")
     print("-" * 40)
     
     for epoch in range(args.epochs):

@@ -200,7 +200,11 @@ def test_attention_weights():
     
     batch, seq, d_model, h = 2, 6, 128, 4
     
-    mha = MultiHeadedAttention(h=h, d_model=d_model)
+    # [PATCH 2026-10-18] dropout=0.0: self.attn stores the weights *after*
+    # attention dropout, which (train mode, p=0.1) zeroes some entries and
+    # rescales the rest by 1/0.9, so rows can never sum to 1. The test always
+    # failed, even for a correct implementation.
+    mha = MultiHeadedAttention(h=h, d_model=d_model, dropout=0.0)
     
     q = torch.randn(batch, seq, d_model)
     k = torch.randn(batch, seq, d_model)

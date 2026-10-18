@@ -404,7 +404,11 @@ def test_trained_copy_task():
     model.train()
     
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.CrossEntropyLoss()
+    # [PATCH 2026-10-18] model(...) returns decoder hidden states (batch, seq, d_model);
+    # the vocab projection + log_softmax lives in model.generator. Feeding hidden
+    # states to CrossEntropyLoss crashed on reshape(-1, vocab_size). Same fix as
+    # train_minimal.py: apply the generator and use NLLLoss on its log-probs.
+    criterion = nn.NLLLoss()
     
     for epoch in range(30):
         data = torch.randint(1, vocab_size, (32, 8))
@@ -417,7 +421,7 @@ def test_trained_copy_task():
         tgt_mask = subsequent_mask(7).expand(32, -1, -1)
         
         optimizer.zero_grad()
-        out = model(src, tgt[:, :-1], src_mask, tgt_mask)
+        out = model.generator(model(src, tgt[:, :-1], src_mask, tgt_mask))
         loss = criterion(
             out.reshape(-1, vocab_size),
             tgt[:, 1:].reshape(-1)

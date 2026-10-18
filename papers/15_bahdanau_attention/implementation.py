@@ -282,10 +282,15 @@ class Seq2SeqWithAttention(nn.Module):
         src: torch.Tensor, 
         src_lengths: torch.Tensor,
         max_len: int = 50,
-        sos_idx: int = 2,
-        eos_idx: int = 3
+        sos_idx: int = 1,
+        eos_idx: int = 2
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inference via greedy decoding."""
+        # [PATCH 2026-10-18] Defaults were sos_idx=2, eos_idx=3, but every dataset in
+        # this day (train_minimal.ReversalDataset, exercises, notebook) uses PAD=0,
+        # SOS=1, EOS=2, and visualization.create_attention_analysis() calls
+        # translate() with the defaults and cuts at token 2. With the old defaults,
+        # decoding started from the training EOS token and stopped on data token 3.
         self.eval()
         src_mask = (src == self.pad_idx)
         encoder_outputs, hidden = self.encoder(src, src_lengths)
