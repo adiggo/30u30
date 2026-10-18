@@ -513,7 +513,9 @@ class EncoderDecoder(nn.Module):
             tgt_mask: Target causal mask
         
         Returns:
-            Output probabilities (batch, tgt_seq, vocab)
+            Decoder hidden states (batch, tgt_seq, d_model). [PATCH 2026-10-18] Not
+            probabilities: apply self.generator to get log-probabilities over the vocab
+            (then use nn.NLLLoss), as train_minimal.py does.
         """
         return self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask)
     
