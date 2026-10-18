@@ -264,7 +264,9 @@ class AlphaDropout:
         alpha_p = -self.alpha * self.scale
         
         # Mean and variance of the dropped units
-        self.a = ((1 - self.p) * (1 + self.p * alpha_p ** 2)) ** (-0.5)
+        # [PATCH 2026-10-18] self.p is the KEEP probability q, so Klambauer et al. (2017) give
+        # a = (q * (1 + (1 - q) * alpha'^2))^(-1/2); the old line swapped q and 1-q (output variance 1.86, not 1, at q=0.8)
+        self.a = (self.p * (1 + (1 - self.p) * alpha_p ** 2)) ** (-0.5)
         self.b = -self.a * alpha_p * (1 - self.p)
     
     def forward(self, x: np.ndarray) -> np.ndarray:
@@ -351,8 +353,11 @@ class DropConnect:
         
         grad_input = grad_output @ W_effective
         grad_W = grad_output.T @ self.input
+        if self.training:
+            # [PATCH 2026-10-18] forward used W * mask / p, so dL/dW must carry the same mask and 1/p (was missing)
+            grad_W = grad_W * self.mask / self.p
         grad_b = grad_output.sum(axis=0)
-        
+
         return grad_input, grad_W, grad_b
 
 

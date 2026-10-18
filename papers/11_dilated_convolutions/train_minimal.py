@@ -253,7 +253,8 @@ class DilatedSegmentationTrainer:
         total_pixels = 0
         class_correct = np.zeros(self.num_classes)
         class_total = np.zeros(self.num_classes)
-        
+        class_pred = np.zeros(self.num_classes)  # [PATCH 2026-10-18] predicted-pixel counts over ALL batches
+
         with torch.no_grad():
             for images, masks in dataloader:
                 images, masks = images.to(self.device), masks.to(self.device)
@@ -275,6 +276,7 @@ class DilatedSegmentationTrainer:
                 # Per-class accuracy
                 for class_id in range(self.num_classes):
                     class_mask = (masks == class_id)
+                    class_pred[class_id] += (predicted == class_id).sum().item()
                     if class_mask.sum() > 0:
                         class_total[class_id] += class_mask.sum().item()
                         class_correct[class_id] += (predicted[class_mask] == class_id).sum().item()
@@ -287,7 +289,9 @@ class DilatedSegmentationTrainer:
         for class_id in range(self.num_classes):
             if class_total[class_id] > 0:
                 intersection = class_correct[class_id]
-                union = class_total[class_id] + (predicted == class_id).sum().item() - intersection
+                # [PATCH 2026-10-18] the union used `predicted` from the LAST batch only while intersection and
+                # class_total were summed over all batches -> mIoU far above 100% (2502% for a perfect model)
+                union = class_total[class_id] + class_pred[class_id] - intersection
                 if union > 0:
                     iou = intersection / union
                     ious.append(iou)
@@ -819,7 +823,7 @@ def quick_demo():
     print(f"✅ Dilated Conv: RF = {dilated_conv.get_receptive_field_size()}, Params = {dilated_conv.get_parameter_count():,}")
     
     # ASPP module
-    aspp = AtrousSpatialPyramidPooling(512, 256)
+    aspp = AtrousSpatialPyramidPooling(512, 256).eval()  # [PATCH 2026-10-18] eval(): BatchNorm in ASPP's image-pooling branch sees a 1x1 map, so batch 1 crashes in train mode
     test_input = torch.randn(1, 512, 32, 32)
     aspp_output = aspp(test_input)
     print(f"✅ ASPP: {test_input.shape} → {aspp_output.shape} (resolution preserved)")

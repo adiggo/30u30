@@ -98,6 +98,9 @@ def load_cifar10(data_dir=None, max_train=5000, max_test=1000):
         X_test = X_test[:max_test]
         y_test = y_test[:max_test]
     else:
+        # [PATCH 2026-10-18] this fallback was silent: test accuracy would be measured on random noise
+        print(f"WARNING: {test_path} not found -> test set is SYNTHETIC random data; "
+              "test accuracy below is meaningless.", file=sys.stderr, flush=True)
         X_test = np.random.randn(max_test, 3, 32, 32).astype(np.float32)
         y_test = np.random.randint(0, 10, max_test)
 
@@ -268,6 +271,9 @@ def main():
     except Exception as e:
         print(f"Could not load CIFAR-10: {e}")
         print("Generating synthetic data for demonstration...")
+        # [PATCH 2026-10-18] make the fallback impossible to miss (random images + random labels, chance = 10%)
+        print("\n" + "!" * 72 + "\nWARNING: CIFAR-10 NOT AVAILABLE -> TRAINING ON SYNTHETIC RANDOM DATA.\n"
+              "Loss/accuracy below say nothing about the CNN.\n" + "!" * 72 + "\n", file=sys.stderr, flush=True)
         X_train = np.random.randn(args.max_train, 3, 32, 32).astype(np.float32)
         y_train = np.random.randint(0, 10, args.max_train)
         X_test = np.random.randn(args.max_test, 3, 32, 32).astype(np.float32)

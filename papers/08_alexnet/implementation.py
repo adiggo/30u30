@@ -295,8 +295,8 @@ class AlexNetTrainer:
             self.optimizer, 
             mode='min', 
             factor=0.1, 
-            patience=5,
-            verbose=True
+            patience=5
+            # [PATCH 2026-10-18] removed verbose=True: ReduceLROnPlateau no longer accepts it (TypeError on PyTorch >= 2.7)
         )
         
         # Training history

@@ -469,7 +469,8 @@ def demonstrate_resnet_v2_training():
     deep_trainer = VeryDeepTrainer(device)
     
     # Train progressively deeper networks
-    depths = [50, 100, 200]
+    # [PATCH 2026-10-18] VeryDeepResNetV2 needs depth = 6n+2; 100 raised, the except+break below then skipped 200 too
+    depths = [50, 110, 200]
     
     for depth in depths:
         try:

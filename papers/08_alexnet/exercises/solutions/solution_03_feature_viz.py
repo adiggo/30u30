@@ -34,7 +34,9 @@ def visualize_conv1_filters(model):
     fig, axes = plt.subplots(8, 12, figsize=(15, 10))
     
     for i, ax in enumerate(axes.flat):
-        if i < 96:
+        # [PATCH 2026-10-18] torchvision's AlexNet is the one-GPU variant with 64 conv1 filters
+        # (the paper's two-GPU model has 96), so a hard-coded 96 raised IndexError at i = 64.
+        if i < weights.shape[0]:
             # Convert to HWC for imshow
             img = weights[i].permute(1, 2, 0).numpy()
             ax.imshow(img)
