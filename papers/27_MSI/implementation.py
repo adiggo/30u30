@@ -11,7 +11,10 @@ Key Components:
 4. Reference Agents (Random, RL, and Predictive)
 
 Reference: Shane Legg (2008) - http://www.vetta.org/documents/Machine_Super_Intelligence.pdf
-"""
+
+[PATCH 2026-10-17] A stray closing triple-quote here split the module
+docstring in two and turned the lines below into code, so the whole module
+failed to parse (SyntaxError: invalid decimal literal).
 
 This "from-scratch" approach mirrors the pedagogical depth of Day 2 (LSTMs),
 focusing on the mathematical interaction between memory and general induction.

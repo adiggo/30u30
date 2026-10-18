@@ -21,6 +21,13 @@ Author: 30u30 Project
 License: CC BY-NC-ND 4.0
 """
 
+# [PATCH 2026-10-17] The original file shipped with no import block at all, so
+# every entry point failed with NameError on Counter / heapq / np.
+import heapq
+from collections import Counter
+
+import numpy as np
+
 
 # =============================================================================
 # ======= SECTION 1: HUFFMAN CODING (FREQUENCY-BASED) =======

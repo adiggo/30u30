@@ -260,8 +260,10 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
         tgt_mask = subsequent_mask(ys.size(1)).type_as(src.data)
         out = model.decode(memory, src_mask, ys, tgt_mask)
         prob = model.generator(out[:, -1])
-        _, next_word = torch.max(prob, dim=1)
-        ys = torch.cat([ys, next_word.unsqueeze(0).unsqueeze(0)], dim=1)
+        _, next_word = torch.max(prob, dim=1)  # shape (1,)
+        # [PATCH 2026-10-17] one unsqueeze gives (1, 1) to match ys; the
+        # original double unsqueeze produced a 3-D tensor and torch.cat failed.
+        ys = torch.cat([ys, next_word.unsqueeze(0)], dim=1)
     
     return ys
 
@@ -290,7 +292,14 @@ def train():
     
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.98))
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    # [PATCH 2026-10-17] The model's forward() returns decoder hidden states
+    # (batch, seq, d_model), exactly as in the original Annotated Transformer;
+    # the vocab projection lives in model.generator, which already applies
+    # log_softmax. The original loop fed hidden states straight into
+    # CrossEntropyLoss, so it crashed on reshape(-1, VOCAB). Apply the
+    # generator and pair its log-probs with NLLLoss (CrossEntropyLoss would
+    # log-softmax a second time).
+    criterion = nn.NLLLoss(ignore_index=0)
     
     # Training loop
     print(f"\n[2] Training on copy task...")
@@ -310,9 +319,10 @@ def train():
             optimizer.zero_grad()
             
             out = model(batch.src, batch.tgt, batch.src_mask, batch.tgt_mask)
-            
+            log_probs = model.generator(out)  # (batch, seq, VOCAB) log-probabilities
+
             loss = criterion(
-                out.reshape(-1, VOCAB),
+                log_probs.reshape(-1, VOCAB),
                 batch.tgt_y.reshape(-1)
             )
             

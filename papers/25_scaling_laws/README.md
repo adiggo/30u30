@@ -138,7 +138,7 @@ A 4-panel diagnostic suite that visualizes:
 
 ## 📚 Further Reading
 
-1.  **Chinchilla Scaling Laws** (DeepMind): [Coming Tomorrow in Day 26!](../26_chinchilla/)
+1.  **Chinchilla Scaling Laws** (DeepMind): [Hoffmann et al., 2022](https://arxiv.org/abs/2203.15556) — planned as a bonus paper in this repo
 2.  **Training Compute-Optimal Large Language Models** (Hoffmann et al., 2022): The definitive update to Kaplan.
 3.  **Scaling Laws for Neural Language Models** (Original Paper): [arXiv:2001.08361](https://arxiv.org/abs/2001.08361)
 4.  **Scaling Laws for Transfer** (Hernandez et al., 2021): Exploring how scale interacts with transfer learning.
@@ -146,4 +146,4 @@ A 4-panel diagnostic suite that visualizes:
 
 ---
 
-**Next Up:** [Day 26: Chinchilla Scaling Laws](../26_chinchilla/) — *Where we discover OpenAI was actually training their models all wrong...*
+**Next Up:** [Day 26: Kolmogorov Complexity](../26_kolmogorov_complexity/) — *Compression as the mathematical bedrock of intelligence.* (Chinchilla, [Hoffmann et al. 2022](https://arxiv.org/abs/2203.15556), is planned as a bonus paper.)

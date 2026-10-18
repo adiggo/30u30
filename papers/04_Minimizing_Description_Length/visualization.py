@@ -87,17 +87,24 @@ def plot_uncertainty_envelope(model, X_train, y_train, X_test=None, n_samples=10
     ax.legend(frameon=True, fontsize=12, loc='upper left')
     
     # Annotations for educational value
-    low_uncertainty_idx = np.argmin(sigma)
-    high_uncertainty_idx = np.argmax(sigma)
-    
-    ax.annotate('Low Uncertainty\n(Model "Knows")', 
-                xy=(X_test[low_uncertainty_idx], mu[low_uncertainty_idx]), 
-                xytext=(X_test[low_uncertainty_idx], mu[low_uncertainty_idx]-1.5),
+    # [PATCH 2026-10-17] X_test is (N, 1), so X_test[idx] is a length-1 array,
+    # which matplotlib/NumPy>=2 refuse to convert to a scalar inside annotate().
+    # Work with flat 1-D views and plain Python floats instead.
+    xs, mus, sigmas = np.ravel(X_test), np.ravel(mu), np.ravel(sigma)
+    low_uncertainty_idx = int(np.argmin(sigmas))
+    high_uncertainty_idx = int(np.argmax(sigmas))
+    x_lo, mu_lo = float(xs[low_uncertainty_idx]), float(mus[low_uncertainty_idx])
+    x_hi, mu_hi = float(xs[high_uncertainty_idx]), float(mus[high_uncertainty_idx])
+    sig_hi = float(sigmas[high_uncertainty_idx])
+
+    ax.annotate('Low Uncertainty\n(Model "Knows")',
+                xy=(x_lo, mu_lo),
+                xytext=(x_lo, mu_lo - 1.5),
                 arrowprops=dict(facecolor='black', shrink=0.05))
-                
-    ax.annotate('High Uncertainty\n(Model "Guesses")', 
-                xy=(X_test[high_uncertainty_idx], mu[high_uncertainty_idx] + 2*sigma[high_uncertainty_idx]), 
-                xytext=(X_test[high_uncertainty_idx]-1, mu[high_uncertainty_idx] + 3),
+
+    ax.annotate('High Uncertainty\n(Model "Guesses")',
+                xy=(x_hi, mu_hi + 2 * sig_hi),
+                xytext=(x_hi - 1, mu_hi + 3),
                 arrowprops=dict(facecolor='black', shrink=0.05))
 
     plt.tight_layout()

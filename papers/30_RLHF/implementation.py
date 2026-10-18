@@ -185,7 +185,8 @@ class RLHF_Trainer:
                 current_segment_obs = []
                 current_segment_true_rewards = []
                 if done or truncated:
-                    assert env is not None
+                    # [PATCH 2026-10-17] was `assert env is not None` (NameError)
+                    assert self.env is not None
                     obs, _ = self.env.reset()
                     
         # Pair up and label
