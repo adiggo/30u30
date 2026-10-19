@@ -561,7 +561,7 @@ def plot_model_probabilities(
 
 def plot_spy_analogy(save_path: str = None):
     """
-    Visualize the coding analogy from Section 3 of the paper.
+    Visualize the coding analogy of crude two-part MDL (tutorial Secs. 1.3 and 2.4).
     
     Shows naive encoding vs model-based encoding.
     """

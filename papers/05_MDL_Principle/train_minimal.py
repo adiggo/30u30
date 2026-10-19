@@ -78,6 +78,23 @@ def two_part_mdl(x: np.ndarray, y: np.ndarray, degree: int,
     return model_cost + data_cost, model_cost, data_cost
 
 
+# [PATCH 2026-10-18] Refined MDL. Plain NML is undefined for Gaussian regression (tutorial
+# Example 2.20, Secs. 2.7.2 and 2.8), so we use Rissanen's renormalised NML (RNML, eq. 2.36),
+# which restricts the fit and renormalises. See implementation.nml_mdl_polynomial for the derivation.
+def nml_rnml(x: np.ndarray, y: np.ndarray, degree: int) -> float:
+    """RNML code length in bits (up to a constant that is the same for every degree)."""
+    from math import lgamma
+    n, k = len(x), degree + 1
+    if k >= n:
+        return float('inf')
+    y_hat = np.poly1d(np.polyfit(x, y, degree))(x)
+    sigma2_hat = max(np.mean((y - y_hat) ** 2), 1e-300)   # ML noise variance
+    R_hat = max(np.mean(y_hat ** 2), 1e-300)              # mean squared fitted value
+    nats = ((n - k) / 2 * np.log(sigma2_hat) + k / 2 * np.log(R_hat)
+            - lgamma(k / 2) - lgamma((n - k) / 2) + n / 2 * np.log(n * np.pi))
+    return nats / np.log(2)
+
+
 def aic(x: np.ndarray, y: np.ndarray, degree: int) -> float:
     """Akaike Information Criterion."""
     n = len(x)
@@ -166,16 +183,19 @@ def run_experiment(
     # =========================================================================
     
     mdl_scores = {}
+    nml_scores = {}   # [PATCH 2026-10-18] refined MDL (RNML) next to the crude two-part code
     aic_scores = {}
     bic_scores = {}
     
     for deg in range(max_degree + 1):
         mdl_scores[deg] = two_part_mdl(x, y, deg)[0]
+        nml_scores[deg] = nml_rnml(x, y, deg)
         aic_scores[deg] = aic(x, y, deg)
         bic_scores[deg] = bic(x, y, deg)
     
     # Find best for each criterion
     mdl_best = min(mdl_scores, key=mdl_scores.get)
+    nml_best = min(nml_scores, key=nml_scores.get)
     aic_best = min(aic_scores, key=aic_scores.get)
     bic_best = min(bic_scores, key=bic_scores.get)
     
@@ -183,16 +203,19 @@ def run_experiment(
         print()
         print("MDL SCORES BY DEGREE")
         print("-" * 40)
-        print(f"{'Degree':<8} {'MDL (bits)':<15} {'AIC':<15} {'BIC':<15}")
-        print("-" * 55)
+        print(f"{'Degree':<8} {'MDL (bits)':<15} {'NML (bits)':<15} {'AIC':<15} {'BIC':<15}")
+        print("-" * 70)
         
         for deg in range(min(8, max_degree + 1)):
             mdl_marker = " ◀ MDL" if deg == mdl_best else ""
+            nml_marker = " ◀ NML" if deg == nml_best else ""
             aic_marker = " ◀ AIC" if deg == aic_best else ""
             bic_marker = " ◀ BIC" if deg == bic_best else ""
             
-            print(f"{deg:<8} {mdl_scores[deg]:<15.2f} {aic_scores[deg]:<15.2f} "
-                  f"{bic_scores[deg]:<15.2f}{mdl_marker}{aic_marker}{bic_marker}")
+            print(f"{deg:<8} {mdl_scores[deg]:<15.2f} {nml_scores[deg]:<15.2f} {aic_scores[deg]:<15.2f} "
+                  f"{bic_scores[deg]:<15.2f}{mdl_marker}{nml_marker}{aic_marker}{bic_marker}")
+        print("  MDL = crude two-part code (33 bits/coefficient); NML = Rissanen's renormalised NML;")
+        print("  AIC and BIC are on the -2 ln L scale (divide by 2 ln 2 for bits).")
     
     # =========================================================================
     # Results summary
@@ -204,6 +227,7 @@ def run_experiment(
         print("-" * 40)
         print(f"  True degree:  {true_degree}")
         print(f"  MDL selects:  {mdl_best} {'[ok]' if mdl_best == true_degree else '[FAIL]'}")
+        print(f"  NML selects:  {nml_best} {'[ok]' if nml_best == true_degree else '[FAIL]'}")
         print(f"  AIC selects:  {aic_best} {'[ok]' if aic_best == true_degree else '[FAIL]'}")
         print(f"  BIC selects:  {bic_best} {'[ok]' if bic_best == true_degree else '[FAIL]'}")
     
@@ -271,13 +295,16 @@ def run_experiment(
     return {
         'true_degree': true_degree,
         'mdl_best': mdl_best,
+        'nml_best': nml_best,
         'aic_best': aic_best,
         'bic_best': bic_best,
         'mdl_correct': mdl_best == true_degree,
+        'nml_correct': nml_best == true_degree,
         'aic_correct': aic_best == true_degree,
         'bic_correct': bic_best == true_degree,
         'compression_ratio': compression_ratio,
         'mdl_scores': mdl_scores,
+        'nml_scores': nml_scores,
         'aic_scores': aic_scores,
         'bic_scores': bic_scores
     }
@@ -294,12 +321,13 @@ def run_monte_carlo(
     Run multiple trials to compare MDL, AIC, BIC reliability.
     """
     print("\n" + "=" * 70)
-    print("MONTE CARLO COMPARISON: MDL vs AIC vs BIC")
+    print("MONTE CARLO COMPARISON: MDL vs NML vs AIC vs BIC")
     print("=" * 70)
     print(f"\nRunning {n_trials} trials...")
     print(f"True degree: {true_degree}, Noise: {noise_std}, Samples: {n_samples}")
     
     mdl_correct = 0
+    nml_correct = 0
     aic_correct = 0
     bic_correct = 0
     
@@ -314,6 +342,7 @@ def run_monte_carlo(
         )
         
         mdl_correct += int(result['mdl_correct'])
+        nml_correct += int(result['nml_correct'])
         aic_correct += int(result['aic_correct'])
         bic_correct += int(result['bic_correct'])
     
@@ -321,12 +350,13 @@ def run_monte_carlo(
     print("ACCURACY OVER", n_trials, "TRIALS")
     print("-" * 40)
     print(f"  MDL: {mdl_correct}/{n_trials} ({100*mdl_correct/n_trials:.1f}%)")
+    print(f"  NML: {nml_correct}/{n_trials} ({100*nml_correct/n_trials:.1f}%)")
     print(f"  AIC: {aic_correct}/{n_trials} ({100*aic_correct/n_trials:.1f}%)")
     print(f"  BIC: {bic_correct}/{n_trials} ({100*bic_correct/n_trials:.1f}%)")
     
     # Find winner
-    winner = 'MDL' if mdl_correct >= max(aic_correct, bic_correct) else \
-             ('AIC' if aic_correct > bic_correct else 'BIC')
+    tallies = {'MDL': mdl_correct, 'NML': nml_correct, 'AIC': aic_correct, 'BIC': bic_correct}
+    winner = max(tallies, key=tallies.get)   # first listed wins ties
     
     print()
     print(f"Winner: {winner}")
