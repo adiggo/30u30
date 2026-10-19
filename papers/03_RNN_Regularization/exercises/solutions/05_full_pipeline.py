@@ -194,6 +194,11 @@ def train_regularized_rnn(
     2. LAYER NORM: Applied in forward pass (always)
     3. WEIGHT DECAY: Added to loss computation
     4. EARLY STOPPING: Monitors validation loss
+
+    [PATCH 2026-10-18] Note: this loop only computes losses. The cell has no backward pass and
+    learning_rate is never used, so the weights do not change and the "training" curve only
+    reflects dropout noise. For a loop that really trains (BPTT, gradient clipping, SGD), see
+    LSTMLanguageModel in ../../implementation.py and train_epoch in ../../train_minimal.py.
     """
     early_stop = EarlyStopping(patience=patience)
     

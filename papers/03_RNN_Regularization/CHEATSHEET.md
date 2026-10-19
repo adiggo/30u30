@@ -8,7 +8,7 @@ Quick reference for Zaremba et al. (2014) and the regularization techniques we i
 
 **Problem:** Dropout doesn't work with RNNs — it disrupts temporal memory.
 **Solution:** Apply dropout ONLY to non-recurrent (vertical) connections. Leave recurrent (horizontal) connections alone.
-**Result:** PTB perplexity 114.5 -> 78.4. Previous SOTA was 107.5.
+**Result:** PTB test perplexity 114.5 (best non-regularized LSTM) -> 78.4. Previous best single models: 107.5 (Pascanu et al.) and 100.0 (Cheng et al.).
 
 ---
 
@@ -83,11 +83,25 @@ else:
 
 ## Paper's Hyperparameters
 
+### Non-regularized PTB Baseline (test ppl 114.5)
+```python
+layers = 2
+hidden = 200
+dropout = 0.0
+init = 0.1            # uniform in [-0.1, 0.1]
+lr = 1.0              # SGD
+lr_decay = 1/2        # After epoch 4
+bptt = 20
+batch_size = 20
+epochs = 13
+```
+
 ### Medium PTB Model
 ```python
 layers = 2
 hidden = 650
 dropout = 0.5         # 50% dropout
+init = 0.05           # uniform in [-0.05, 0.05]
 lr = 1.0              # SGD
 lr_decay = 1/1.2      # After epoch 6
 grad_clip = 5
@@ -101,6 +115,7 @@ epochs = 39
 layers = 2
 hidden = 1500
 dropout = 0.65        # 65% dropout
+init = 0.04           # uniform in [-0.04, 0.04]
 lr = 1.0
 lr_decay = 1/1.15     # After epoch 14
 grad_clip = 10
@@ -125,14 +140,14 @@ dropout = 0.2         # Much less — more training data
 | `keep_prob` | 0.5-0.9 | Paper uses 0.35-0.8 depending on model/task size |
 | `weight_decay` | 0.00001-0.01 | Not in the paper; standard practice |
 | `patience` | 3-10 | Not in the paper; standard practice |
-| `grad_clip` | 5-10 | Paper uses 5 (medium) and 10 (large) |
+| `grad_clip` | 5-10 | Global gradient norm; paper uses 5 (medium) and 10 (large) |
 
-### Starting Point
+### Starting Point (`train_minimal.py` defaults, the paper's recipe)
 ```python
-keep_prob = 0.8        # Conservative — increase dropout if overfitting
-weight_decay = 0.0001  # Light L2 penalty
-patience = 5           # Early stopping
-grad_clip = 5.0        # From the paper
+keep_prob = 0.5        # "50% dropout" on non-recurrent connections; 1.0 = none
+weight_decay = 0.0     # the paper uses none (--weight-decay to try it)
+patience = 0           # off: the paper trains a fixed number of epochs (--patience to try it)
+grad_clip = 5.0        # global norm, from the paper
 ```
 
 ---
@@ -150,20 +165,26 @@ grad_clip = 5.0        # From the paper
 - More patience: `patience = 10`
 
 ### NaN Loss
-- Add gradient clipping: `np.clip(grad, -5, 5)`
+- Clip the global gradient norm as the paper does: `clip_grad_norm(grads, 5.0)` (rescales all gradients together; element-wise `np.clip` changes their direction)
 - Check learning rate (may be too high)
-- Add layer normalization
+- Add layer normalization (our addition, not in the paper)
 
 ---
 
 ## Quick Start
 
 ```bash
-# Train with default regularization
-python train_minimal.py --dropout 0.8 --weight-decay 0.0001 --patience 5
+# The paper's recipe at CPU scale: 2x200 LSTM, 50% dropout, first 100k PTB words (downloads PTB once)
+python train_minimal.py
 
-# More aggressive
-python train_minimal.py --dropout 0.5 --weight-decay 0.001 --patience 3
+# Dropout vs no dropout, everything else identical (about 10 min of CPU)
+python train_minimal.py --compare
+
+# More aggressive dropout (the large model's 65% = keep_prob 0.35)
+python train_minimal.py --keep-prob 0.35
+
+# Our additions, off by default (the paper uses neither)
+python train_minimal.py --weight-decay 0.00001 --patience 2
 ```
 
 ---

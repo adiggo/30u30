@@ -215,6 +215,9 @@ def train_regularized_rnn(
     
     This is a simplified training loop that demonstrates
     how all regularization techniques work together.
+    [PATCH 2026-10-18] It only computes losses: there is no backward pass or weight update, so
+    the weights never change. A loop that really trains (BPTT, clipping, SGD) is train_epoch in
+    ../train_minimal.py.
     
     Args:
         rnn_cell: The RegularizedRNNCell to train
