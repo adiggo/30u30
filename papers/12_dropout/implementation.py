@@ -674,6 +674,47 @@ class DropoutNetwork:
         
         return softmax(x)
     
+    # [PATCH 2026-10-18] backward pass and SGD step: the network could only run forward, so
+    # compare_dropout_rates() below reported accuracies of untrained networks. Checked against
+    # torch.autograd and central differences in validation/day12_dropout_network.py.
+    def backward(self, probs: np.ndarray, y: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Gradients of the mean cross-entropy -1/N sum_n log probs[n, y_n] for every Linear layer,
+        back through the dropout masks and ReLUs that the last forward() call cached.
+
+        Args:
+            probs: (N, classes) output of forward() on this batch
+            y: (N,) integer labels
+
+        Returns:
+            [(grad_W, grad_b), ...], one pair per Linear layer, in the order of self.layers
+        """
+        N = probs.shape[0]
+        grad = probs.copy()
+        grad[np.arange(N), y] -= 1          # softmax + cross-entropy: dL/dlogits = p - onehot(y)
+        grad /= N                            # mean over the batch
+        grads = [None] * len(self.layers)
+        for i in reversed(range(len(self.layers))):
+            grad_input, grad_W, grad_b = self.layers[i].backward(grad)
+            grads[i] = (grad_W, grad_b)
+            if i > 0:
+                # the input of layer i was dropout(relu(output of layer i-1)): undo both, in reverse
+                grad = self.dropout_layers[i - 1].backward(grad_input)   # same mask and 1/p as forward
+                grad = relu_backward(self.pre_activations[i - 1], grad)  # 0 where the unit was off
+        return grads
+
+    def sgd_step(self, grads: List[Tuple[np.ndarray, np.ndarray]], lr: float, momentum: float = 0.9):
+        """SGD with momentum (the paper used momentum 0.95-0.99 with dropout, App. A.2)."""
+        if not hasattr(self, 'velocity'):
+            self.velocity = [(np.zeros_like(layer.W), np.zeros_like(layer.b)) for layer in self.layers]
+        for layer, (gW, gb), (vW, vb) in zip(self.layers, grads, self.velocity):
+            vW *= momentum                   # in place, so self.velocity keeps the update
+            vW -= lr * gW
+            vb *= momentum
+            vb -= lr * gb
+            layer.W += vW
+            layer.b += vb
+
     def train(self):
         """Set to training mode."""
         for dropout in self.dropout_layers:
@@ -696,50 +737,54 @@ def compare_dropout_rates(X_train: np.ndarray,
                           y_train: np.ndarray,
                           X_val: np.ndarray,
                           y_val: np.ndarray,
-                          dropout_rates: List[float] = [0.0, 0.3, 0.5, 0.7]) -> dict:
+                          dropout_rates: List[float] = [0.0, 0.3, 0.5, 0.7],
+                          epochs: int = 5,
+                          batch_size: int = 64,
+                          lr: float = 0.05,
+                          seed: int = 0) -> dict:
     """
-    Train networks with different dropout rates and compare.
-    
+    Train a DropoutNetwork (784-256-128-10 for MNIST) per dropout rate and compare.
+
+    dropout_rates are DROP probabilities (keep probability p = 1 - rate, the paper's p). Each network
+    is trained briefly (`epochs` passes of mini-batch SGD with momentum 0.9) from the same seed;
+    accuracies are then measured in eval mode (dropout off) on the training and validation sets.
+    A few epochs on a subset is far shorter than the paper's training, so this shows the trend of
+    the train-validation gap, not the paper's error rates.
+
     Returns:
-        Dictionary with training and validation accuracies for each rate.
+        {keep_prob: {'train_acc', 'val_acc', 'gap'}} with gap = train_acc - val_acc.
     """
+    # [PATCH 2026-10-18] the loop ran forward passes only (no backward, no update) and reported
+    # the accuracies of untrained networks; it now trains each network
     results = {}
     
-    for p in dropout_rates:
-        keep_prob = 1.0 if p == 0 else 1 - p
-        
+    for rate in dropout_rates:
+        keep_prob = 1.0 - rate
         print(f"\nTraining with dropout keep_prob = {keep_prob:.1f}...")
-        
-        # Create network
+        np.random.seed(seed)                 # same initial weights and batch order for every rate
         net = DropoutNetwork(
             input_size=X_train.shape[1],
             hidden_sizes=[256, 128],
             output_size=10,
             dropout_p=keep_prob
         )
-        
-        # Simple training loop (simplified)
-        learning_rate = 0.01
-        
-        for epoch in range(10):
+
+        for epoch in range(epochs):
             net.train()
-            
-            # Forward
-            logits = net.forward(X_train)
-            
-            # Compute accuracy
-            train_acc = (logits.argmax(axis=1) == y_train).mean()
-            
-            net.eval()
-            val_logits = net.forward(X_val)
-            val_acc = (val_logits.argmax(axis=1) == y_val).mean()
-        
+            order = np.random.permutation(len(X_train))       # shuffled indices for this epoch
+            for start in range(0, len(order), batch_size):
+                idx = order[start:start + batch_size]
+                probs = net.forward(X_train[idx])               # (B, 10)
+                net.sgd_step(net.backward(probs, y_train[idx]), lr)
+
+        net.eval()                           # dropout off: the averaged ("weight-scaled") network
+        train_acc = (net.forward(X_train).argmax(axis=1) == y_train).mean()
+        val_acc = (net.forward(X_val).argmax(axis=1) == y_val).mean()
         results[keep_prob] = {
             'train_acc': train_acc,
             'val_acc': val_acc,
             'gap': train_acc - val_acc
         }
-        
         print(f"  Train: {train_acc:.3f}, Val: {val_acc:.3f}, Gap: {train_acc - val_acc:.3f}")
     
     return results
