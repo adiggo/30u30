@@ -19,7 +19,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from implementation import (
     CoffeeAutomaton, run_simulation, coarse_grain,
-    threshold_array, row_majority_adjust, gzip_size, grid_to_bytes
+    threshold_array, row_majority_adjust, gzip_size, grid_to_bytes,
+    DEFAULT_GRAIN
 )
 
 
@@ -57,13 +58,15 @@ def plot_entropy_complexity(results: Dict, title: str = 'Coffee Automaton',
 
 
 def plot_grid_snapshots(results: Dict, num_snapshots: int = 5,
-                        grain_size: int = 10, num_buckets: int = 7,
+                        grain_size: int = DEFAULT_GRAIN, num_buckets: int = 7,
                         title: str = 'Grid State Over Time'):
     """
     Visualize the automaton state at key moments.
     Replicates Figures 3, 4, 11, 12.
 
     Shows fine-grained (top row) and coarse-grained (bottom row) states.
+    [PATCH 2026-10-18] The coarse-grained row is now the paper's centred-window
+    average (same N x N size as the grid), thresholded and row-adjusted.
     """
     if 'grids' not in results or len(results['grids']) == 0:
         print("No grid snapshots stored (grid_size > 100?)")
@@ -202,7 +205,7 @@ def plot_scaling_analysis(scaling_results: Dict):
     return fig
 
 
-def plot_compressor_comparison(grid_size: int = 50, total_steps: int = 100000,
+def plot_compressor_comparison(grid_size: int = 50, total_steps: int = 10000,
                                num_snapshots: int = 80, seed: int = 42):
     """
     Compare different compression algorithms — replicates Figure 5.
@@ -216,7 +219,7 @@ def plot_compressor_comparison(grid_size: int = 50, total_steps: int = 100000,
 
     # Run simulation once, collect grids
     ca = CoffeeAutomaton(grid_size, 'interacting', seed)
-    grain_size = max(2, grid_size // 10)
+    grain_size = DEFAULT_GRAIN  # [PATCH 2026-10-18] was max(2, n // 10); 10,000 steps (was 100,000) resolve the peak
     steps_per = max(1, total_steps // num_snapshots)
 
     times = [0]
@@ -310,21 +313,22 @@ if __name__ == '__main__':
     print("=" * 55)
 
     # Run a quick simulation
-    print("\n1. Running interacting simulation (50x50, 50000 steps)...")
-    results = run_simulation(grid_size=50, total_steps=50000, num_snapshots=80,
+    # [PATCH 2026-10-18] 10,000 batches (4 n^2) cover rise, peak and fall at 50x50
+    print("\n1. Running interacting simulation (50x50, 10000 batches of swaps)...")
+    results = run_simulation(grid_size=50, total_steps=10000, num_snapshots=80,
                              model='interacting', seed=42)
 
     print("2. Plotting entropy and complexity...")
     plot_entropy_complexity(results, 'Interacting Model (50x50)')
 
     print("3. Plotting grid snapshots...")
-    plot_grid_snapshots(results, num_snapshots=5, grain_size=5)
+    plot_grid_snapshots(results, num_snapshots=5)
 
     print("4. Plotting annotated complexity curve...")
     plot_complexity_curve_annotated(results)
 
     print("\n5. Running compressor comparison...")
-    plot_compressor_comparison(grid_size=50, total_steps=50000, num_snapshots=60)
+    plot_compressor_comparison(grid_size=50, total_steps=10000, num_snapshots=60)
 
     plt.show()
     print("\nDone.")

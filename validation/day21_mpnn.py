@@ -13,8 +13,9 @@ Checks
   2. Permutation equivariance of node states and invariance of the readout under node relabelling + edge
      reordering (sum and set2set readouts).
   3. Batch independence: a graph's prediction is identical alone or batched with others.
-  4. Set2SetReadout == NumPy re-implementation of the code's recurrence; and its difference from the
-     Vinyals/PyG ordering with the same weights (both invariant -- a variant, not a bug).
+  4. Set2SetReadout == NumPy re-implementation of the Vinyals/PyG ordering (since 2026-10-18; before, the
+     code attended before the LSTM step -- the old recurrence is still printed for comparison). The (h_v, x_v)
+     projection added at the same time is checked in day21_readout_fix.py.
   5. scatter_softmax == per-group torch.softmax; MatrixMessage einsum == explicit per-type matrices.
 
 Usage: OMP_NUM_THREADS=1 python validation/day21_mpnn.py [path/to/21_Neural_Message_Passing]
@@ -179,9 +180,9 @@ for _ in range(6):                                  # Vinyals / PyG order: q = L
 y_ref_vinyals = mlp(qs)
 e_s2s = np.abs(y_code - y_ref_code).max()
 d_vin = np.abs(y_code - y_ref_vinyals).max()
-print(f"[set2set] code vs NumPy of the code's recurrence: max|delta| = {e_s2s:.2e}; "
-      f"vs Vinyals/PyG ordering (same weights): max|delta| = {d_vin:.2e} (different function)")
-ok &= e_s2s < 1e-12
+print(f"[set2set] code vs NumPy of the Vinyals/PyG ordering: max|delta| = {d_vin:.2e}; "
+      f"vs the pre-2026-10-18 attend-then-LSTM recurrence: max|delta| = {e_s2s:.2e} (different function)")
+ok &= d_vin < 1e-12  # [2026-10-18] the code now follows Vinyals et al.
 
 # ---------------------------------------------------------------- 5. scatter_softmax, MatrixMessage
 logits = torch.randn(9); grp = torch.tensor([0, 0, 1, 1, 1, 2, 2, 2, 2])

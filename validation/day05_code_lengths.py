@@ -12,8 +12,11 @@ train_minimal.py).
 4. Bernoulli NML parametric complexity: exact Shtarkov sum (eq. 2.17) vs the asymptotic
    expansion (eq. 2.21) with the correct Fisher information I(theta) = 1/(theta(1-theta)), and vs
    the constant printed in the tutorial's Example 2.17 (which uses theta(1-theta)).
-5. implementation.nml_complexity_polynomial: properties that rule it out as an estimate of
-   COMP_n (COMP >= 0 always; it is not invariant to the arbitrary sampling box).
+5. implementation.nml_complexity_polynomial. Before 2026-10-18 it was a Monte Carlo average without
+   the box volume (about -380 bits; it shifted by -n log2 10 when the box widened 10x). It now
+   computes COMP of the restricted model (sigma known, mean squared fit <= R) in closed form; here
+   we check COMP >= 0 and monotone in degree. The full checks (pre-fix estimator, eq. 2.21, Monte
+   Carlo, sigma-unknown RNML, selection rates) are in validation/day05_nml_check.py.
 """
 import os
 import sys
@@ -114,17 +117,15 @@ print("[NML] correct constant: (1/2)log2(pi/2) = %.4f; Example 2.17 prints -2.67
       "(it integrates sqrt(theta(1-theta)) = pi/8 instead of 1/sqrt(theta(1-theta)) -> pi)"
       % (0.5 * np.log2(np.pi / 2)))
 
-# ------------------------------------------------------------------ 5. code's NML estimator
-np.random.seed(0)
-vals = {dg: I.nml_complexity_polynomial(x, dg, y_range=(-100, 100), num_samples=500) for dg in range(4)}
-print("[NML-code] nml_complexity_polynomial, box (-100,100):", {k_: round(v, 1) for k_, v in vals.items()})
-np.random.seed(0)
-v_wide = I.nml_complexity_polynomial(x, 2, y_range=(-1000, 1000), num_samples=500)
-print(f"[NML-code] same degree 2, box (-1000,1000): {v_wide:.1f} bits; shift {v_wide - vals[2]:.1f} "
-      f"vs n*log2(10) = {50 * np.log2(10):.1f}")
-neg = all(v < 0 for v in vals.values())
-print(f"[NML-code] all values negative: {neg} -> impossible for COMP_n = log int f(y|theta_hat(y)) dy,"
-      " which is >= 0 because f(y|theta_hat(y)) >= f(y|theta_0) for any fixed theta_0")
-ok &= neg   # the check here is that we correctly characterise the estimator
+# ------------------------------------------------------------------ 5. code's NML complexity
+# [PATCH 2026-10-18] The pre-fix estimator (characterised here in round 1) was replaced; its
+# reproduction and the full checks of the new code live in validation/day05_nml_check.py.
+vals = {dg: I.nml_complexity_polynomial(x, dg, R=100.0, sigma=1.0) for dg in range(11)}
+print("[NML-code] nml_complexity_polynomial(x, d, R=100, sigma=1), d=0..10:",
+      [round(v, 2) for v in vals.values()])
+mono = all(vals[d + 1] >= vals[d] for d in range(10))
+print(f"[NML-code] all >= 0: {all(v >= 0 for v in vals.values())}; non-decreasing in degree: {mono} "
+      "(COMP = log int max_theta f(y|theta) dy >= log int f(y|theta_0) dy = 0)")
+ok &= all(v >= 0 for v in vals.values()) and mono
 
 print("PASS" if ok else "FAIL")

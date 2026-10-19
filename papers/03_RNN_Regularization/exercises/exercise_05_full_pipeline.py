@@ -5,28 +5,47 @@ Exercise 5: Full Regularization Pipeline
 Goal: Combine ALL regularization techniques into one complete training pipeline.
 
 Your Task:
-- Fill in the TODOs below to build a complete regularized RNN
-- Use: Dropout, Layer Normalization, Weight Decay, Early Stopping
+- Part A (TODOs 1-12): build a regularized RNN cell: dropout on the input, layer norm,
+  an L2 penalty and weight snapshots
+- Part B (TODOs 13-15): write a training loop that really trains: the paper's 2-layer LSTM
+  language model (LSTMLanguageModel from ../implementation.py) on a slice of Penn Treebank,
+  with dropout, weight decay, gradient clipping, SGD and early stopping
 - Test your implementation with the provided tests
 
 Learning Objectives:
 1. Integrate multiple regularization techniques
 2. Understand how they work together
-3. Build a production-ready training loop
+3. Build a training loop that updates the weights (BPTT + SGD) and keeps the best ones
 4. See the combined effect on overfitting
 
 Time: 40-50 minutes
 Difficulty: Hard
 
 The Four Regularization Techniques:
-    1. DROPOUT: Randomly zero neurons (training only!)
-    2. LAYER NORM: Normalize activations for stability
-    3. WEIGHT DECAY: Penalize large weights (L2 regularization)
-    4. EARLY STOPPING: Stop when validation loss stops improving
+    1. DROPOUT: Randomly zero neurons (training only!), on non-recurrent connections only
+    2. LAYER NORM: Normalize activations for stability (our addition; Part A only, the
+       paper's model has none)
+    3. WEIGHT DECAY: Penalize large weights (L2 regularization; our addition)
+    4. EARLY STOPPING: Stop when validation loss stops improving (our addition)
+
+[PATCH 2026-10-18] Part B used to compute losses only (no backward pass, so nothing trained).
+It now trains LSTMLanguageModel, whose backward pass is checked against torch.autograd in
+validation/day03_bptt_check.py. The data helpers come from ../train_minimal.py; Penn Treebank
+is read from data/ptb/ (or $PTB_DIR) and downloaded (~6 MB) on first use.
 """
 
+import os
+import sys
 import numpy as np
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, Optional
+
+# [PATCH 2026-10-18] Part B uses the day's model and data helpers, one folder up.
+# (clip_grad_norm and windows are used by the code you write in TODO 15.)
+DAY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if DAY_DIR not in sys.path:
+    sys.path.insert(0, DAY_DIR)
+from implementation import LSTMLanguageModel, clip_grad_norm  # noqa: E402,F401
+from train_minimal import load_ptb, batchify, windows, evaluate  # noqa: E402,F401
 
 
 class RegularizedRNNCell:
@@ -200,34 +219,51 @@ class EarlyStopping:
         return self.best_weights
 
 
+# ============================================================================
+# PART B: A REAL TRAINING LOOP (the paper's model on a Penn Treebank slice)
+# ============================================================================
+
+def load_ptb_slice(n_train: int = 30_000, n_valid: int = 20_000) -> Tuple[np.ndarray, np.ndarray, int]:
+    """First n_train training words and first n_valid validation words of Penn Treebank as 1-D
+    word-id arrays, plus the vocabulary size (10,000). Uses load_ptb from ../train_minimal.py."""
+    train_ids, valid_ids, _, vocab = load_ptb()
+    return train_ids[:n_train], valid_ids[:n_valid], len(vocab)
+
+
 def train_regularized_rnn(
-    rnn_cell: RegularizedRNNCell,
-    train_sequences: List[np.ndarray],
-    train_targets: List[np.ndarray],
-    val_sequences: List[np.ndarray],
-    val_targets: List[np.ndarray],
-    learning_rate: float = 0.001,
-    max_epochs: int = 100,
-    patience: int = 5
+    model: LSTMLanguageModel,
+    train_data: np.ndarray,
+    val_ids: np.ndarray,
+    learning_rate: float = 1.0,
+    max_epochs: int = 10,
+    patience: int = 2,
+    weight_decay: float = 0.0,
+    bptt: int = 20,
+    max_grad_norm: float = 5.0
 ) -> Dict:
     """
-    Train the regularized RNN with early stopping.
-    
-    This is a simplified training loop that demonstrates
-    how all regularization techniques work together.
-    
+    Train a word-level LSTM language model with all the regularizers and early stopping.
+
+    The model is the paper's (Zaremba et al. 2014): model.keep_prob sets the dropout on the
+    non-recurrent connections, applied inside model.forward(..., training=True); the recurrent
+    state is never dropped. Training is truncated BPTT: the hidden state is carried from one
+    bptt-step window to the next, but gradients stop at the window boundary.
+
     Args:
-        rnn_cell: The RegularizedRNNCell to train
-        train_sequences: List of input sequences for training
-        train_targets: List of target values for training  
-        val_sequences: List of input sequences for validation
-        val_targets: List of target values for validation
-        learning_rate: Learning rate for gradient descent
-        max_epochs: Maximum number of training epochs
-        patience: Patience for early stopping
+        model: LSTMLanguageModel to train (updated in place; it ends with its best weights)
+        train_data: (rows, B) word ids from batchify(train_ids, B): B parallel word streams
+        val_ids: 1-D array of validation word ids
+        learning_rate: SGD step size (the paper uses 1.0)
+        max_epochs: Maximum number of passes over train_data
+        patience: Epochs without a validation improvement before stopping
+        weight_decay: L2 coefficient lambda; adds lambda * W to every weight gradient
+        bptt: Time steps per truncated-BPTT window
+        max_grad_norm: Clip the global gradient norm at this value (the paper uses 5)
         
     Returns:
-        Dictionary with training history
+        Dictionary with training history: 'train_loss' and 'val_loss' per epoch (mean
+        cross-entropy per word in nats; perplexity = exp(loss)), 'epochs_trained',
+        'stopped_early' and 'best_epoch'
     """
     # TODO 13: Initialize early stopping
     # early_stop = EarlyStopping(patience=patience)
@@ -237,58 +273,52 @@ def train_regularized_rnn(
     #     'train_loss': [],
     #     'val_loss': [],
     #     'epochs_trained': 0,
-    #     'stopped_early': False
+    #     'stopped_early': False,
+    #     'best_epoch': 0
     # }
+    # batch_size = train_data.shape[1]
     
     # TODO 15: Training loop
     # for epoch in range(max_epochs):
-    #     # Training phase (with dropout)
-    #     train_loss = 0.0
-    #     for seq, target in zip(train_sequences, train_targets):
-    #         h = np.zeros((1, rnn_cell.hidden_size))
-    #         for t in range(len(seq)):
-    #             x = seq[t:t+1]  # (1, input_size)
-    #             h = rnn_cell.forward(x, h, training=True)
+    #     # Training phase: dropout ON, weights updated after every window
+    #     state = model.init_state(batch_size)      # zero (h, c) at the start of each pass
+    #     nll_sum, n_words = 0.0, 0
+    #     for x, y in windows(train_data, bptt):     # x, y: (T, B) word ids; y = the next words
+    #         loss, state, cache = model.forward(x, y, state, training=True)
+    #         grads, _ = model.backward(cache)       # BPTT through this window only
     #         
-    #         # Simple MSE loss
-    #         loss = np.mean((h - target) ** 2)
+    #         # Weight decay: the gradient of (lambda/2) * ||W||^2 is lambda * W.
+    #         # Apply it to weights and embeddings (keys not starting with 'b'), not biases.
+    #         for k, g in grads.items():
+    #             if not k.startswith('b'):
+    #                 g += weight_decay * model.params[k]
     #         
-    #         # Add L2 penalty
-    #         loss += rnn_cell.compute_l2_penalty()
-    #         train_loss += loss
+    #         clip_grad_norm(grads, max_grad_norm)    # one global norm, as in the paper
+    #         model.sgd_update(grads, learning_rate)  # W <- W - lr * grad
+    #         nll_sum += loss * x.shape[1]           # loss is (1/B) * summed NLL
+    #         n_words += x.size
+    #     train_loss = nll_sum / n_words             # mean NLL per word, measured with dropout on
     #     
-    #     train_loss /= len(train_sequences)
-    #     
-    #     # Validation phase (no dropout!)
-    #     val_loss = 0.0
-    #     for seq, target in zip(val_sequences, val_targets):
-    #         h = np.zeros((1, rnn_cell.hidden_size))
-    #         for t in range(len(seq)):
-    #             x = seq[t:t+1]
-    #             h = rnn_cell.forward(x, h, training=False)  # No dropout!
-    #         
-    #         loss = np.mean((h - target) ** 2)
-    #         val_loss += loss
-    #     
-    #     val_loss /= len(val_sequences)
+    #     # Validation phase: dropout OFF (evaluate() runs with training=False)
+    #     val_loss = float(np.log(evaluate(model, val_ids, batch_size, bptt)))  # log(perplexity)
     #     
     #     # Record history
     #     history['train_loss'].append(train_loss)
     #     history['val_loss'].append(val_loss)
     #     
-    #     # Check early stopping
-    #     if early_stop(val_loss, rnn_cell.get_weights()):
+    #     # Check early stopping (it snapshots the weights whenever validation improves)
+    #     stop = early_stop(val_loss, model.get_state())
+    #     if early_stop.wait == 0:                   # this epoch was the best so far
+    #         history['best_epoch'] = epoch + 1
+    #     if stop:
     #         history['stopped_early'] = True
     #         history['epochs_trained'] = epoch + 1
-    #         
-    #         # Restore best weights
-    #         best_weights = early_stop.get_best_weights()
-    #         if best_weights is not None:
-    #             rnn_cell.set_weights(best_weights)
     #         break
     # else:
     #     history['epochs_trained'] = max_epochs
     # 
+    # # Restore the best weights, whether or not training stopped early
+    # model.set_state(early_stop.get_best_weights())
     # return history
     
     pass  # Remove this when you implement
@@ -420,43 +450,42 @@ def test_weight_save_restore():
 
 
 def test_full_pipeline():
-    """Test complete training pipeline."""
-    print("Testing full pipeline...")
+    """Test the complete training pipeline: real training on a small Penn Treebank slice."""
+    print("Testing full pipeline (LSTM language model on a Penn Treebank slice)...")
     
-    # Create simple synthetic data
-    np.random.seed(42)
-    
-    # Training data
-    train_sequences = [np.random.randn(5, 3) for _ in range(10)]
-    train_targets = [np.random.randn(1, 8) for _ in range(10)]
-    
-    # Validation data
-    val_sequences = [np.random.randn(5, 3) for _ in range(5)]
-    val_targets = [np.random.randn(1, 8) for _ in range(5)]
-    
-    # Create cell
-    cell = RegularizedRNNCell(
-        input_size=3, 
-        hidden_size=8, 
-        dropout_rate=0.2,
-        weight_decay=0.001
-    )
+    # [PATCH 2026-10-18] the old test ran on random numbers and could not tell whether anything
+    # trained. This one trains for 3 short epochs (a few seconds) and checks that it learned.
+    train_ids, val_ids, vocab_size = load_ptb_slice(n_train=6000, n_valid=3000)
+    model = LSTMLanguageModel(vocab_size, hidden_size=32, num_layers=2, keep_prob=0.8,
+                              init_scale=0.1, seed=0)
+    before = model.get_state()
+    untrained = float(np.log(evaluate(model, val_ids, 10, 20)))   # about ln(10000) = 9.2 nats
     
     # Train
     history = train_regularized_rnn(
-        cell,
-        train_sequences, train_targets,
-        val_sequences, val_targets,
-        max_epochs=20,
-        patience=5
+        model,
+        batchify(train_ids, 10), val_ids,
+        learning_rate=1.0,
+        max_epochs=3,
+        patience=2,
+        weight_decay=1e-5,
+        bptt=20
     )
     
-    assert 'train_loss' in history, "Missing train_loss in history"
-    assert 'val_loss' in history, "Missing val_loss in history"
-    assert len(history['train_loss']) > 0, "No training history recorded"
+    for key in ('train_loss', 'val_loss', 'epochs_trained', 'stopped_early', 'best_epoch'):
+        assert key in history, f"Missing {key} in history"
+    assert len(history['val_loss']) == history['epochs_trained'] > 0, "Expected one validation loss per epoch"
+    changed = [k for k in before if not np.array_equal(before[k], model.params[k])]
+    assert len(changed) == len(before), \
+        f"Only {len(changed)}/{len(before)} parameter arrays changed: is the SGD update applied?"
+    best = min(history['val_loss'])
+    assert best < untrained - 1.0, f"Validation loss should fall well below {untrained:.2f} nats, got {best:.2f}"
+    restored = float(np.log(evaluate(model, val_ids, 10, 20)))
+    assert abs(restored - best) < 1e-6, "The model should end with its best-validation weights"
     
-    print(f"  [ok] Trained for {history['epochs_trained']} epochs")
-    print(f"  [ok] Early stopped: {history['stopped_early']}")
+    print(f"  [ok] All {len(before)} parameter arrays updated")
+    print(f"  [ok] Validation perplexity {np.exp(untrained):.0f} -> {np.exp(best):.0f} in {history['epochs_trained']} epochs")
+    print(f"  [ok] Best weights (epoch {history['best_epoch']}) restored; early stopped: {history['stopped_early']}")
     print("[ok] Full pipeline tests passed!\n")
 
 

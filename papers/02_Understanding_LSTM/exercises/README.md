@@ -115,7 +115,9 @@ Remove each gate one at a time and measure the impact on performance. Understand
 - Keep all other hyperparameters constant
 - Train for same number of iterations
 - Use same random seed for fair comparison
-- Expected: removing forget gate hurts most
+- Expected: removing forget gate hurts most (the reference solution measures +0.14 nats/char of
+  held-out loss in each of 3 seeds; removing the input or output gate is within seed noise at this
+  scale)
 
 ---
 
@@ -152,8 +154,9 @@ Test LSTM's ability to remember information over different distances.
 - Generate data programmatically
 - Use random characters for "noise"
 - Start with small distances to verify task
-- LSTM should handle 50+ steps easily
-- Vanilla RNN should fail beyond 10 steps
+- Measured in the reference solution (3,000 training sequences, hidden 32): the LSTM is near-perfect
+  at 5-10 steps, about 50% at 20 and at chance at 50; the vanilla RNN's accuracy swings with the
+  seed (at 20 steps: 90%, 8%, 9%). More updates or a larger forget-gate bias push the limit further.
 
 ---
 
@@ -166,7 +169,7 @@ Test LSTM's ability to remember information over different distances.
 Implement a GRU (Gated Recurrent Unit) and compare it to LSTM.
 
 ### What You'll Learn
-- GRU architecture (3 gates instead of 4)
+- GRU architecture (2 gates plus a candidate, vs the LSTM's 3 gates plus a candidate)
 - Trade-offs: speed vs capacity
 - When to use GRU vs LSTM
 - How simplifications affect performance
@@ -193,7 +196,7 @@ Implement a GRU (Gated Recurrent Unit) and compare it to LSTM.
 
 ### Hints
 - GRU has 3 weight matrices (vs LSTM's 4)
-- GRU is typically 20-30% faster
+- In the reference solution the GRU has 22% fewer parameters and is about 1.2x faster per update
 - Performance is often similar
 - LSTM may be better for very long sequences
 - GRU is simpler and often preferred today
@@ -255,10 +258,10 @@ When things go wrong:
 
 Complete solutions are available in `solutions/` folder:
 - `solution_01_lstm_implementation.py`
-- `solution_02_gate_analysis.py`
-- `solution_03_ablation_study.py`
-- `solution_04_long_range_deps.py`
-- `solution_05_lstm_vs_gru.py`
+- `exercise_02_solution.py`
+- `exercise_03_solution.py`
+- `exercise_04_solution.py`
+- `exercise_05_solution.py`
 
 **Recommendation**: Try solving on your own first! Only check solutions if you're truly stuck.
 

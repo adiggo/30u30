@@ -33,7 +33,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from implementation import (
     CoffeeAutomaton, coarse_grain, threshold_array,
-    row_majority_adjust, grid_to_bytes
+    row_majority_adjust, grid_to_bytes, DEFAULT_GRAIN
 )
 
 
@@ -48,7 +48,10 @@ def compress_with_all(data: bytes) -> dict:
     pass
 
 
-def run_compressor_comparison(grid_size=50, total_steps=50000, num_snapshots=60):
+# [PATCH 2026-10-18] 10,000 batches (4 n^2) instead of 50,000: the 50x50 cup peaks
+# at ~2,000-5,000 batches and is mixed by ~10,000, so 50,000 squeezed the hump into
+# the first few snapshots.
+def run_compressor_comparison(grid_size=50, total_steps=10000, num_snapshots=60):
     """
     TODO: Run the automaton and collect complexity estimates from each compressor.
 
@@ -59,7 +62,7 @@ def run_compressor_comparison(grid_size=50, total_steps=50000, num_snapshots=60)
     # YOUR CODE HERE
     # Hint:
     #   1. Create CoffeeAutomaton
-    #   2. At each snapshot, get grid, coarse-grain, threshold, adjust
+    #   2. At each snapshot, get grid, coarse-grain (grain DEFAULT_GRAIN), threshold, adjust
     #   3. Convert to bytes
     #   4. Compress with all compressors
     #   5. Collect sizes

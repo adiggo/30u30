@@ -40,9 +40,12 @@ swaps = {
         'compare_with_cross_validation': S.solution_compare_with_cross_validation,
         'universal_code_length': S.solution_universal_code_length,
         'compute_mdl': S.solution_two_part_mdl},
-    'exercise_04_nml_complexity': {
+    'exercise_04_nml_complexity': {   # [PATCH 2026-10-18] redesigned exercise 4 (restricted NML + RNML)
+        'nml_complexity_polynomial': S.solution_nml_complexity_polynomial,
         'estimate_nml_complexity_polynomial': S.solution_estimate_nml_complexity_polynomial,
         'compute_nml_mdl': S.solution_compute_nml_mdl,
+        'compare_nml_vs_two_part': S.solution_compare_nml_vs_two_part,
+        'visualize_complexity_vs_degree': S.solution_visualize_complexity_vs_degree,
         'logsumexp': S.solution_logsumexp,
         'gaussian_log_likelihood': S.solution_gaussian_log_likelihood},
     'exercise_05_mdl_vs_aic_bic': {
@@ -50,7 +53,11 @@ swaps = {
         'compute_bic': S.solution_compute_bic,
         'compute_mdl': lambda x, y, d, precision=32: S.solution_two_part_mdl(x, y, d, precision)[0],
         'select_with_all_criteria': S.solution_select_with_all_criteria,
-        'monte_carlo_comparison': S.solution_monte_carlo_comparison},
+        'monte_carlo_comparison': S.solution_monte_carlo_comparison,
+        # [PATCH 2026-10-18] the three analyses now have reference solutions
+        'analyze_sample_size_effect': S.solution_analyze_sample_size_effect,
+        'analyze_noise_level_effect': S.solution_analyze_noise_level_effect,
+        'when_do_they_disagree': S.solution_when_do_they_disagree},
 }
 summary = {}
 for name, fns in swaps.items():

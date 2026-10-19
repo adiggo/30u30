@@ -16,6 +16,10 @@ Each exercise builds on the previous one:
 4. **Exercise 4:** Solve convex hull problem
 5. **Exercise 5:** Tackle Traveling Salesman Problem (TSP)
 
+Exercises 4 and 5 are Pointer Networks tasks (Vinyals et al. 2015a, Day 18), not experiments of
+Order Matters; they apply the same Read-Process-Write model to other set-to-sequence problems.
+Exercise 4's targets end with a pointer to a learned STOP slot, which handles hulls of any size.
+
 ---
 
 ## Learning Objectives

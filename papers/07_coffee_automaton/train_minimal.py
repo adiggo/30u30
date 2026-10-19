@@ -2,22 +2,28 @@
 train_minimal.py — Run the coffee automaton experiments from the command line.
 
 Usage:
-    # Basic run: interacting model, shows entropy + complexity over time
-    python train_minimal.py --grid-size 50 --steps 100000
+    # Basic run: interacting model, entropy + complexity over time
+    # (50x50, 4 n^2 = 10,000 batches of swaps, grain 7, 7 buckets + adjustment)
+    python train_minimal.py
 
-    # Compare interacting vs non-interacting (replicates Figures 2 and 10)
-    python train_minimal.py --grid-size 50 --steps 100000 --compare-models
+    # Compare interacting vs non-interacting (Figures 2 and 10)
+    python train_minimal.py --compare-models
 
-    # Adjusted coarse-graining (Section 6) vs basic (Section 5)
-    python train_minimal.py --grid-size 50 --steps 100000 --compare-methods
+    # Section 5 (3 buckets) vs Section 6 (7 buckets + row-majority adjustment)
+    python train_minimal.py --compare-methods
 
-    # Scaling experiment (replicates Figures 6-8)
-    python train_minimal.py --scaling --sizes 10 20 30 50
+    # Scaling experiment (Figures 6-8): n = 20..60, 2 seeds, ~1 min
+    python train_minimal.py --scaling --no-plot
+    # Larger grids, n = 20..120 (opt-in, ~10 min on one core)
+    python train_minimal.py --scaling --large --no-plot
 
-    # Non-interacting model only
-    python train_minimal.py --grid-size 50 --steps 50000 --model non_interacting
+    # The repo's earlier non-overlapping block averaging, for comparison
+    python train_minimal.py --scaling --coarse block --no-plot
 
 Paper: Aaronson, Carroll, Ouellette (2014), arXiv:1405.6903
+[PATCH 2026-10-18] Coarse-graining is now the paper's centred window (Sec. 5.1) with
+one grain size for all n; run lengths default to the mixing time; --grain, --coarse,
+--seeds and --large added.
 """
 
 import argparse
@@ -29,7 +35,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from implementation import (
     CoffeeAutomaton, run_simulation, compare_models,
-    scaling_experiment, measure_entropy, measure_complexity
+    scaling_experiment, measure_entropy, measure_complexity,
+    DEFAULT_GRAIN, default_total_steps, fit_r2
 )
 
 
@@ -198,22 +205,34 @@ def plot_scaling(scaling_results, save_path=None):
     plt.show()
 
 
+def describe_curve(c):
+    """[PATCH 2026-10-18] 'rise and fall' = interior peak and a final value at least halfway back down."""
+    c = np.asarray(c, dtype=float)
+    k = int(np.argmax(c))
+    hump = 0 < k < len(c) - 1 and c[-1] <= c[0] + 0.5 * (c[k] - c[0])
+    return (f"{c[0]:.0f} -> peak {c[k]:.0f} -> final {c[-1]:.0f} bytes "
+            f"({'rises and falls' if hump else 'no clear rise and fall'})")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Coffee Automaton — Aaronson, Carroll, Ouellette (2014)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python train_minimal.py --grid-size 50 --steps 100000
-  python train_minimal.py --compare-models --grid-size 50 --steps 100000
-  python train_minimal.py --scaling --sizes 10 20 30 50
+  python train_minimal.py
+  python train_minimal.py --compare-models
+  python train_minimal.py --scaling --no-plot
+  python train_minimal.py --scaling --large --no-plot
         """
     )
 
     parser.add_argument('--grid-size', type=int, default=50,
                         help='Grid side length N (default: 50)')
-    parser.add_argument('--steps', type=int, default=100000,
-                        help='Total simulation steps (default: 100000)')
+    # [PATCH 2026-10-18] default run length follows the mixing time (was 100000 batches)
+    parser.add_argument('--steps', type=int, default=None,
+                        help='Total simulation steps (default: 4 N^2 batches for the interacting '
+                             'model, N^2/2 steps for the non-interacting one)')
     parser.add_argument('--snapshots', type=int, default=100,
                         help='Number of measurement points (default: 100)')
     parser.add_argument('--model', type=str, default='interacting',
@@ -224,6 +243,11 @@ Examples:
                         help='Threshold buckets: 3 (Section 5) or 7 (Section 6)')
     parser.add_argument('--no-adjust', action='store_true',
                         help='Disable row-majority adjustment (use raw thresholding)')
+    parser.add_argument('--grain', type=int, default=None,
+                        help=f'Grain size g, side of the averaging window (default: {DEFAULT_GRAIN})')
+    parser.add_argument('--coarse', type=str, default='window', choices=['window', 'block'],
+                        help="Coarse-graining: 'window' = paper Sec. 5.1 (centred g x g average per "
+                             "cell); 'block' = non-overlapping blocks (repo's earlier method)")
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
 
@@ -235,7 +259,11 @@ Examples:
     parser.add_argument('--scaling', action='store_true',
                         help='Run scaling experiment (Figures 6-8)')
     parser.add_argument('--sizes', type=int, nargs='+', default=None,
-                        help='Grid sizes for scaling experiment')
+                        help='Grid sizes for scaling experiment (default: 20 30 40 50 60)')
+    parser.add_argument('--large', action='store_true',
+                        help='Scaling on larger grids, n = 20..120 (~10 min on one core)')
+    parser.add_argument('--seeds', type=int, default=2,
+                        help='Scaling: runs per grid size, averaged (default: 2)')
 
     parser.add_argument('--save', type=str, default=None,
                         help='Save plot to file instead of showing')
@@ -243,20 +271,46 @@ Examples:
                         help='Skip plotting (print results only)')
 
     args = parser.parse_args()
+    grain = args.grain if args.grain is not None else DEFAULT_GRAIN
 
     if args.scaling:
         # Scaling experiment (Figures 6-8)
         print("Scaling experiment (Figures 6-8 from paper)")
         print("=" * 50)
-        sizes = args.sizes or [10, 20, 30, 50]
-        results = scaling_experiment(sizes=sizes, seed=args.seed)
+        sizes = args.sizes or ([20, 40, 60, 80, 100, 120] if args.large else [20, 30, 40, 50, 60])
+        print(f"interacting model, {args.coarse} coarse-graining, grain {grain} for every n, "
+              f"4 n^2 batches per run, {args.seeds} seed(s) per n")
+        results = scaling_experiment(sizes=sizes, seed=args.seed, grain_size=grain,
+                                     method=args.coarse, seeds=args.seeds)
 
-        print("\nResults:")
-        print(f"  {'Size':>6} {'Max Entropy':>12} {'Max Complexity':>14} {'Peak Time':>10}")
-        print(f"  {'----':>6} {'-----------':>12} {'--------------':>14} {'---------':>10}")
+        print("\nResults (means over seeds; max complexity = Sec. 5 metric, 3 buckets;"
+              " adjusted = Sec. 6 metric, 7 buckets + row majority):")
+        print(f"  {'Size':>5} {'Max entropy':>11} {'Max cx (S5)':>11} {'Max cx (S6)':>11}"
+              f" {'Peak (batches)':>14} {'Peak (swaps)':>12}")
         for i, n in enumerate(results['sizes']):
-            print(f"  {n:>6} {results['max_entropy'][i]:>12} "
-                  f"{results['max_complexity'][i]:>14} {results['peak_time'][i]:>10}")
+            print(f"  {n:>5} {results['max_entropy'][i]:>11.1f} {results['max_complexity'][i]:>11.1f}"
+                  f" {results['max_complexity_adjusted'][i]:>11.1f} {results['peak_time'][i]:>14.0f}"
+                  f" {results['peak_swaps'][i]:>12.3g}")
+
+        # [PATCH 2026-10-18] the fits the paper reports (Figs. 6-8), plus power-law exponents
+        n_arr = results['sizes']
+        _, r2_e = fit_r2(n_arr, results['max_entropy'], 2)
+        c5, r2_5 = fit_r2(n_arr, results['max_complexity'], 1)
+        c6, r2_6 = fit_r2(n_arr, results['max_complexity_adjusted'], 1)
+        _, r2_t = fit_r2(n_arr, results['peak_swaps'], 2)
+        # slope of log(y) vs log(n) = exponent p in y ~ n^p
+        p_b = np.polyfit(np.log(n_arr), np.log(results['peak_time']), 1)[0]
+        p_s = np.polyfit(np.log(n_arr), np.log(results['peak_swaps']), 1)[0]
+        p_5 = np.polyfit(np.log(n_arr), np.log(results['max_complexity']), 1)[0]
+        p_6 = np.polyfit(np.log(n_arr), np.log(results['max_complexity_adjusted']), 1)[0]
+        print(f"\n  Fig. 6  max entropy, quadratic fit:            r^2 = {r2_e:.4f}  (paper 0.9999)")
+        print(f"  Fig. 7  max complexity (S5), linear fit:       slope {c5[0]:+.2f} bytes per unit n,"
+              f" r^2 = {r2_5:.4f}  (paper 0.9798)")
+        print(f"          max complexity (S6 adjusted), linear:  slope {c6[0]:+.2f} bytes per unit n,"
+              f" r^2 = {r2_6:.4f}")
+        print(f"          power-law exponents of max complexity: n^{p_5:.2f} (S5), n^{p_6:.2f} (S6)")
+        print(f"  Fig. 8  time to peak (swaps), quadratic fit:   r^2 = {r2_t:.4f}  (paper 0.9878)")
+        print(f"          power-law exponents of time to peak:   n^{p_b:.2f} in batches, n^{p_s:.2f} in swaps")
 
         if not args.no_plot:
             plot_scaling(results, save_path=args.save)
@@ -266,14 +320,18 @@ Examples:
         print("Comparing interacting vs non-interacting models")
         print("=" * 50)
         inter, non_inter = compare_models(
-            args.grid_size, args.steps, args.snapshots, args.seed)
+            args.grid_size, args.steps, args.snapshots, args.seed,
+            grain_size=grain, num_buckets=args.buckets,
+            adjust=not args.no_adjust, method=args.coarse)
 
         inter_peak = np.argmax(inter['complexity'])
         non_peak = np.argmax(non_inter['complexity'])
-        print(f"\nInteracting: peak complexity = {inter['complexity'][inter_peak]} "
-              f"at t = {inter['times'][inter_peak]}")
-        print(f"Non-interacting: peak complexity = {non_inter['complexity'][non_peak]} "
-              f"at t = {non_inter['times'][non_peak]}")
+        print(f"\n(grain {grain}, {args.buckets} buckets, adjustment "
+              f"{'off' if args.no_adjust else 'on'})")
+        print(f"Interacting:     {describe_curve(inter['complexity'])}; peak at t = "
+              f"{inter['times'][inter_peak]} batches = {inter['paper_time'][inter_peak]:.3g} swaps")
+        print(f"Non-interacting: {describe_curve(non_inter['complexity'])}; peak at t = "
+              f"{non_inter['times'][non_peak]} steps")
 
         if not args.no_plot:
             plot_model_comparison(inter, non_inter, save_path=args.save)
@@ -286,39 +344,43 @@ Examples:
         print("Running with 3-bucket thresholding (Section 5)...")
         results_3 = run_simulation(
             args.grid_size, args.steps, args.snapshots,
-            args.model, num_buckets=3, adjust=False, seed=args.seed)
+            args.model, grain_size=grain, num_buckets=3, adjust=False,
+            seed=args.seed, method=args.coarse)
 
         print("Running with 7-bucket adjusted (Section 6)...")
         results_7 = run_simulation(
             args.grid_size, args.steps, args.snapshots,
-            args.model, num_buckets=7, adjust=True, seed=args.seed)
+            args.model, grain_size=grain, num_buckets=7, adjust=True,
+            seed=args.seed, method=args.coarse)
 
         peak_3 = np.argmax(results_3['complexity'])
         peak_7 = np.argmax(results_7['complexity'])
-        print(f"\n3-bucket: peak = {results_3['complexity'][peak_3]} at t={results_3['times'][peak_3]}")
-        print(f"7-bucket adjusted: peak = {results_7['complexity'][peak_7]} at t={results_7['times'][peak_7]}")
+        print(f"\n3-bucket:          {describe_curve(results_3['complexity'])}, peak at t={results_3['times'][peak_3]}")
+        print(f"7-bucket adjusted: {describe_curve(results_7['complexity'])}, peak at t={results_7['times'][peak_7]}")
 
         if not args.no_plot:
             plot_method_comparison(results_3, results_7, save_path=args.save)
 
     else:
         # Single model run
+        steps = args.steps if args.steps is not None else default_total_steps(args.grid_size, args.model)
         print(f"Running {args.model} model ({args.grid_size}x{args.grid_size}, "
-              f"{args.steps} steps, {args.buckets} buckets, "
+              f"{steps} steps, grain {grain} ({args.coarse}), {args.buckets} buckets, "
               f"adjust={'off' if args.no_adjust else 'on'})")
         print("=" * 50)
 
         results = run_simulation(
-            args.grid_size, args.steps, args.snapshots,
-            args.model, num_buckets=args.buckets,
-            adjust=not args.no_adjust, seed=args.seed)
+            args.grid_size, steps, args.snapshots,
+            args.model, grain_size=grain, num_buckets=args.buckets,
+            adjust=not args.no_adjust, seed=args.seed, method=args.coarse)
 
         peak_idx = np.argmax(results['complexity'])
         print(f"\nResults:")
-        print(f"  Peak complexity: {results['complexity'][peak_idx]} bytes "
-              f"at t = {results['times'][peak_idx]}")
-        print(f"  Final entropy: {results['entropy'][-1]} bytes")
-        print(f"  Final complexity: {results['complexity'][-1]} bytes")
+        print(f"  Complexity: {describe_curve(results['complexity'])}")
+        print(f"  Peak at t = {results['times'][peak_idx]} steps"
+              + (f" = {results['paper_time'][peak_idx]:.3g} swaps (paper's unit)"
+                 if args.model == 'interacting' else ""))
+        print(f"  Entropy: {results['entropy'][0]} -> {results['entropy'][-1]} bytes")
         print(f"  Mixing fraction: {results['fraction_mixed'][-1]:.3f}")
 
         if not args.no_plot:

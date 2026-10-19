@@ -10,18 +10,19 @@ Checks
  2. Patched forward == an independent re-implementation of the paper's equations (same masks).
  3. layer_norm_backward vs torch.autograd through F.layer_norm.
  4. dropout_forward/backward: inverted scaling, E[out] = x, backward == autograd.
- 5. Does train_minimal.train_epoch change any parameter? (it should, if it trained)
+ 5. Does train_minimal.train_epoch train? [2026-10-18: it now trains LSTMLanguageModel with BPTT; the
+    pre-fix loop changed no parameter.] Three epochs on a synthetic Markov-chain word stream: every
+    parameter must change and the held-out perplexity must at least halve (uniform 26; the chain's own
+    perplexity is about 3.4). RegularizedLSTM stays forward-only.
  6. Exercise-5 solution cell: fraction of exact zeros in the returned recurrent state (pre-fix vs patched).
 
 Run:  OMP_NUM_THREADS=1 python validation/day03_dropout_placement.py
 """
 import importlib.util
-import io
 import os
 import subprocess
 import sys
 import types
-from contextlib import redirect_stdout
 
 import numpy as np
 import torch
@@ -164,22 +165,32 @@ print('   dropout_backward vs autograd max|d| = %.2e  %s; eval mode identity: %s
       % (d_bw, 'PASS' if d_bw == 0 else 'FAIL', np.array_equal(o_eval, xs) and m_eval is None))
 
 # ---- 5. does the training loop train? ----------------------------------------------------------
+# [PATCH 2026-10-18] train_minimal.py now trains LSTMLanguageModel (forward + BPTT backward) on PTB.
+# Here: a synthetic first-order Markov chain over 26 "words" (each word has 2 likely successors), so
+# the check needs no dataset; a model that learns gets far below the uniform perplexity of 26.
 spec = importlib.util.spec_from_file_location('tm03', DAY + '/train_minimal.py')
 tm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tm)
-np.random.seed(0)
-model = tm.RegularizedLSTM(vocab_size=26, hidden_size=16, output_size=26, dropout_keep_prob=0.8)
-before = {k: v.copy() for k, v in vars(model).items() if isinstance(v, np.ndarray)}
-data, tgts = tm.generate_simple_dataset(seq_length=20, vocab_size=26, num_samples=10)
-cfg = tm.RegularizationConfig()
-with redirect_stdout(io.StringIO()):
-    l1 = tm.train_epoch(model, data, tgts, cfg, training=True)
-    l2 = tm.train_epoch(model, data, tgts, cfg, training=True)
-changed = [k for k, v in before.items() if not np.array_equal(v, getattr(model, k))]
-print('5. train_epoch: parameters changed after 2 epochs: %s  (losses %.2f, %.2f; ln(26)*19 = %.2f)'
-      % (changed if changed else 'NONE -> no backward pass, nothing is learned (FAIL)', l1, l2,
-         np.log(26) * 19))
-print('   RegularizedLSTM defines a backward method:', hasattr(model, 'backward'))
+mc = np.random.default_rng(0)
+succ = mc.integers(0, 26, size=(26, 2))                        # 2 likely successors per word
+stream = [0]
+for _ in range(6000):
+    w = stream[-1]
+    stream.append(succ[w, mc.integers(0, 2)] if mc.random() < 0.9 else mc.integers(0, 26))
+stream = np.array(stream)
+model = tm.LSTMLanguageModel(26, 32, num_layers=2, keep_prob=0.8, init_scale=0.1, seed=0)
+before = {k: v.copy() for k, v in model.params.items()}
+ppl0 = tm.evaluate(model, stream[5000:], 4, 20)                 # held-out tail of the stream
+data = tm.batchify(stream[:5000], 5)                           # 5 streams, 10-step windows: 100 SGD steps/epoch
+fit = [tm.train_epoch(model, data, 10, 1.0, 5.0)[0] for _ in range(3)]
+ppl2 = tm.evaluate(model, stream[5000:], 4, 20)
+changed = [k for k, v in before.items() if not np.array_equal(v, model.params[k])]
+ok5 = len(changed) == len(before) and ppl2 < 0.5 * ppl0
+print('5. train_minimal.train_epoch on LSTMLanguageModel: %d/%d parameter arrays changed after 3 epochs; '
+      'held-out perplexity %.1f -> %.1f (uniform 26, chain ~3.4; training-time %s)  %s'
+      % (len(changed), len(before), ppl0, ppl2, ', '.join('%.1f' % f for f in fit), 'PASS' if ok5 else 'FAIL'))
+print('   RegularizedLSTM defines a backward method: %s (forward-only teaching model, as documented)'
+      % hasattr(impl_new.RegularizedLSTM, 'backward'))
 
 # ---- 6. exercise-5 solution cell ---------------------------------------------------------------
 sol_head = module_from_source('sol5_head', head_source(

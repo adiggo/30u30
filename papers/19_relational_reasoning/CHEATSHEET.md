@@ -15,8 +15,8 @@ A **Relation Network (RN)** is a set-processing module that forces a relational 
 # Verify environment and permutation invariance
 python setup.py
 
-# Train on furthest point task
-python train_minimal.py --mode furthest --epochs 30
+# Train on furthest point task (the label is a list position: needs --use-coords, else chance 10%)
+python train_minimal.py --mode furthest --use-coords --epochs 10
 
 # Generate relation heatmaps
 python visualization.py --num-objects 10

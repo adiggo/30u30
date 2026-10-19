@@ -63,7 +63,7 @@ The outputs of $g_{\theta}$ are summed element-wise. This summation is critical 
 Our implementation (`implementation.py`) focuses on efficiency and clarity:
 
 -   **Broadcasting**: We avoid Python loops for pair generation. Instead, we use PyTorch broadcasting (`unsqueeze` + `expand`) to generate all $N^2$ pairs in parallel on the GPU.
--   **Coordinate Injection**: As noted in Section 3.1, CNN features lack position info. We manually append $(x, y)$ coordinates to each object vector so the model can learn spatial relations.
+-   **Coordinate Injection**: In the paper (Section 4, "Dealing with pixels"), each CNN feature-map cell is "tagged with an arbitrary coordinate indicating its relative spatial position". Our `add_coordinates` appends a simpler tag: the object's position in the input list (`linspace(-1, 1, N)`) and a 0. This tag makes the output depend on input order, which is exactly what the "furthest" task (label = a list position) needs.
 -   **Modular Design**: The `RelationNetwork` class is designed to be a plug-and-play module that can be inserted after any feature extractor (CNN or LSTM).
 
 ---
@@ -76,9 +76,14 @@ Our implementation (`implementation.py`) focuses on efficiency and clarity:
 # Verify environment and permutation invariance
 python setup.py
 
-# Train on the "furthest point" relational task
-python train_minimal.py --mode furthest --epochs 30
+# Train on the "furthest point" task. Its label is the furthest point's POSITION in the input list,
+# and a Relation Network's output does not depend on the order of its inputs, so it needs
+# --use-coords (a position tag on each object); without it, accuracy stays at chance (10%).
+python train_minimal.py --mode furthest --use-coords --epochs 10
 ```
+
+With `--use-coords`, 10 epochs reach about 78% test accuracy (chance 10%; about 5 minutes on one
+busy CPU core). The counting task (`--mode count`, the default) needs no position tag.
 
 ### Exercises (in `exercises/`)
 

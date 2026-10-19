@@ -157,7 +157,8 @@ def main():
         print("\nNext steps:")
         print("  1. Read README.md for overview")
         print("  2. Open notebook.ipynb for interactive learning")
-        print("  3. Try: python train_minimal.py --epochs 10")
+        # [PATCH 2026-10-18] the default run now trains on Penn Treebank (downloaded on first use)
+        print("  3. Try: python train_minimal.py   (about 3 min on one CPU core; downloads PTB once)")
         print("  4. Work through exercises/ in order")
     else:
         print("[NOTE] Some checks failed. Please fix the issues above.")

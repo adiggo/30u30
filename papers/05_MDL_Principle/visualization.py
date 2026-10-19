@@ -6,7 +6,7 @@ Beautiful plots to understand MDL model selection:
 - Model complexity vs. data fit trade-off
 - MDL score breakdown (model cost + data cost)
 - Comparison: MDL vs AIC vs BIC
-- Compression ratio visualization
+- Code lengths at a stated precision (compression vs a fixed-length code)
 - Prequential coding visualization
 
 Run this script to see MDL in action!
@@ -30,6 +30,8 @@ from implementation import (
     aic_score,
     bic_score,
     compression_ratio,
+    fixed_precision_code_length,   # [PATCH 2026-10-18] code lengths at a stated precision
+    code_length_at_precision,
     generate_test_data,
     mdl_model_probability
 )
@@ -412,84 +414,70 @@ def plot_prequential_coding(
 
 
 # =============================================================================
-# PLOT 5: COMPRESSION RATIO VISUALIZATION
+# PLOT 5: CODE LENGTHS AT A STATED PRECISION
 # =============================================================================
+# [PATCH 2026-10-18] The old plot divided "n x 32-bit floats" by MDL scores. -log2 of a density
+# is a code length at UNIT precision (tutorial Sec. 2.2.2), so that ratio mixed two precisions.
+# Now: code lengths of y rounded to `precision`, against a fixed-length code at the same precision,
+# and the precision-free saving relative to the degree-0 model.
 
 def plot_compression_analysis(
     x: np.ndarray,
     y: np.ndarray,
     max_degree: int = 10,
-    save_path: str = None
+    save_path: str = None,
+    precision: float = 0.01
 ):
     """
-    Visualize the compression achieved by different models.
-    
-    Shows that good models COMPRESS data, while overfit models don't.
+    Code length of y rounded to `precision` under each degree's two-part code, against a
+    fixed-length code at the same precision (left), and bits saved over degree 0 (right).
     """
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    
-    raw_bits = len(y) * 32  # Assuming 32-bit floats
-    
+
+    n = len(y)
+    fixed_bits = fixed_precision_code_length(y, precision)
     degrees = list(range(max_degree + 1))
-    mdl_scores = []
-    compression_ratios = []
-    
-    for deg in degrees:
-        total, _, _ = two_part_mdl_polynomial(x, y, deg)
-        mdl_scores.append(total)
-        compression_ratios.append(raw_bits / total if total > 0 else 0)
-    
-    best_degree = np.argmax(compression_ratios)
-    
-    # Plot 1: Raw vs Compressed
+    code_bits = [code_length_at_precision(two_part_mdl_polynomial(x, y, d)[0], n, precision)
+                 for d in degrees]
+    saved = [code_bits[0] - c for c in code_bits]       # precision-free: the shift cancels
+    best_degree = int(np.argmin(code_bits))
+
+    # Plot 1: code lengths at the stated precision
     ax1 = axes[0]
-    
-    ax1.axhline(y=raw_bits, color='gray', linestyle='--', linewidth=2,
-                label=f'Raw data: {raw_bits} bits')
-    ax1.plot(degrees, mdl_scores, 'o-', color=COLORS['total'], linewidth=2,
-             markersize=8, label='MDL compressed')
-    
-    ax1.fill_between(degrees, mdl_scores, raw_bits, 
-                     where=[s < raw_bits for s in mdl_scores],
-                     color=COLORS['data_cost'], alpha=0.3, label='Compression savings')
-    
+    ax1.axhline(y=fixed_bits, color='gray', linestyle='--', linewidth=2,
+                label=f'Fixed-length code: {fixed_bits:.0f} bits')
+    ax1.plot(degrees, code_bits, 'o-', color=COLORS['total'], linewidth=2,
+             markersize=8, label='Two-part MDL code')
+    ax1.fill_between(degrees, code_bits, fixed_bits,
+                     where=[c < fixed_bits for c in code_bits],
+                     color=COLORS['data_cost'], alpha=0.3, label='Shorter than fixed-length')
     ax1.axvline(x=best_degree, color=COLORS['true'], linestyle=':',
-                linewidth=2, label=f'Best compression: Degree {best_degree}')
-    
+                linewidth=2, label=f'Shortest: Degree {best_degree}')
     ax1.set_xlabel('Polynomial Degree')
-    ax1.set_ylabel('Size (bits)')
-    ax1.set_title('Raw Data vs MDL Compressed',
+    ax1.set_ylabel(f'Bits to send y rounded to {precision:g}')
+    ax1.set_title(f'Code Length at Precision {precision:g}',
                   fontsize=11, fontweight='bold')
     ax1.legend()
     ax1.set_xticks(degrees)
-    
-    # Plot 2: Compression Ratio
+
+    # Plot 2: bits saved over the degree-0 model (does not depend on the precision)
     ax2 = axes[1]
-    
-    colors = [COLORS['true'] if r == max(compression_ratios) else COLORS['mdl']
-              for r in compression_ratios]
-    
-    bars = ax2.bar(degrees, compression_ratios, color=colors, alpha=0.7,
-                   edgecolor='black', linewidth=0.5)
-    
-    ax2.axhline(y=1.0, color='red', linestyle='--', linewidth=2,
-                label='No compression (ratio = 1)')
-    
+    colors = [COLORS['true'] if d == best_degree else COLORS['mdl'] for d in degrees]
+    bars = ax2.bar(degrees, saved, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+    ax2.axhline(y=0.0, color='red', linestyle='--', linewidth=2, label='Degree 0 (mean + noise)')
     ax2.set_xlabel('Polynomial Degree')
-    ax2.set_ylabel('Compression Ratio')
-    ax2.set_title('Compression Ratio by Model Complexity\n(Higher = Better Compression)',
+    ax2.set_ylabel('Bits saved over degree 0')
+    ax2.set_title('Bits Saved over the Simplest Model\n(same at every precision)',
                   fontsize=11, fontweight='bold')
     ax2.legend()
     ax2.set_xticks(degrees)
-    
-    # Add value labels on bars
-    for bar, ratio in zip(bars, compression_ratios):
-        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
-                 f'{ratio:.1f}x', ha='center', va='bottom', fontsize=8)
-    
-    fig.suptitle('Compression Reveals Regularity: MDL Score Breakdown',
+    for bar, value in zip(bars, saved):
+        ax2.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 2,
+                 f'{value:.0f}', ha='center', va='bottom', fontsize=8)
+
+    fig.suptitle('Compression Reveals Regularity (at a Stated Precision)',
                  fontsize=14, fontweight='bold', y=1.02)
-    
+
     plt.tight_layout()
     
     if save_path:
@@ -561,7 +549,7 @@ def plot_model_probabilities(
 
 def plot_spy_analogy(save_path: str = None):
     """
-    Visualize the coding analogy from Section 3 of the paper.
+    Visualize the coding analogy of crude two-part MDL (tutorial Secs. 1.3 and 2.4).
     
     Shows naive encoding vs model-based encoding.
     """

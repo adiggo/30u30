@@ -7,8 +7,8 @@ Quick reference for training and monitoring your NTM.
 ## Quick Start
 
 ```bash
-# Train on the standard Copy Task
-python train.py
+# Train on the standard Copy Task (~5 min on one CPU core; add --paper for 10,001 iterations)
+python train_minimal.py
 
 # Visualize results (requires a trained model)
 # python visualization.py --checkpoint ntm_copy_final.pth
@@ -24,15 +24,15 @@ python train.py
 | `memory_m` | 20 | Dimension of each slot | Enough precision for bitmask storage |
 | `controller_h` | 100 | Size of RNN hidden state | The "thinking" capacity (Sec 2) |
 | `learning_rate`| 1e-4 | RMSProp step size | Sec 4: RMSProp is recommended for NTM |
-| `grad_clip` | 10.0 | Maximum gradient norm | Sec 4: Essential for training stability |
+| `grad_clip` | (-10, 10) | Clip every gradient component (`clip_grad_value_`) | Sec 4.6: "all gradient components are clipped elementwise to the range (-10, 10)" |
 
 ---
 
 ## Common Issues & Fixes
 
 ### Loss is "NaN"
-- **Reason:** Gradients exploded during the circular convolution step (Eq 8).
-- **Fix:** Ensure `nn.utils.clip_grad_norm_` is set to 10.0 or lower in `train.py`.
+- **Reason:** Exploding gradients, or a normalization that divides by ~0 (e.g. the sharpening of Eq 9 with a diffuse focus and a large gamma).
+- **Fix:** Clip gradients: `train_minimal.py` clips every component to (-10, 10) like the paper (`nn.utils.clip_grad_value_`). Keep normalizations scale-invariant, as `implementation.py` does for Eq 9.
 
 ### Bit Error Rate (BER) doesn't decrease
 - **Reason:** The model failed to learn the "Sharpening" mechanism (Eq 9), resulting in blurry addresses.
@@ -40,7 +40,7 @@ python train.py
 
 ### Memory focus jumps randomly
 - **Reason:** The Interpolation gate (Eq 7) is not learning to steady the focus.
-- **Fix:** Increase the training iterations; NTMs often take 10,000+ iterations to "stabilize" their pointer logic.
+- **Fix:** Train longer. With batch 32 on lengths 1-20 the held-out error stays at ~30-40% for the first ~1,500-1,750 iterations and then collapses within a few hundred (seed-dependent); `train_minimal.py` runs 3,000.
 
 ---
 

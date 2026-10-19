@@ -12,6 +12,7 @@ Each solution includes:
 """
 
 import numpy as np
+from math import comb, lgamma  # [PATCH 2026-10-18] for the exercise-4 closed forms
 from typing import Tuple, Dict, List
 
 
@@ -243,11 +244,16 @@ class SolutionMDLModelSelector:
             raise ValueError("Model not fitted. Call fit() first.")
         return np.poly1d(self.best_coefficients)(x)
     
-    def get_compression_ratio(self, x: np.ndarray, y: np.ndarray) -> float:
-        """Calculate compression ratio."""
-        raw_bits = len(y) * 32
-        mdl_bits = self.scores[self.best_degree]
-        return raw_bits / mdl_bits if mdl_bits > 0 else 0
+    def get_compression_ratio(self, x: np.ndarray, y: np.ndarray, precision: float = 0.01) -> float:
+        """Fixed-length code / model code, both for y rounded to `precision` (tutorial Sec. 2.2.2).
+
+        [PATCH 2026-10-18] was len(y) * 32 / MDL score, which compared float32 precision with
+        the unit precision of a density code length.
+        """
+        n_grid = np.floor((np.max(y) - np.min(y)) / precision) + 1   # grid points over the observed range
+        fixed_bits = len(y) * np.log2(n_grid)
+        model_bits = self.scores[self.best_degree] - len(y) * np.log2(precision)
+        return fixed_bits / model_bits if model_bits > 0 else 0
     
     def get_model_probability(self, degree: int) -> float:
         """Get approximate posterior probability."""
@@ -307,11 +313,19 @@ def solution_compare_with_cross_validation(
 # =============================================================================
 # EXERCISE 4 SOLUTIONS: NML Complexity
 # =============================================================================
+# [PATCH 2026-10-18] Rewritten with the redesigned exercise. The old solution estimated an
+# infinite quantity (Gaussian NML with sigma fitted, Example 2.20 / Sec. 2.8) and dropped the
+# Monte Carlo box volume, returning about -380 bits. Now: closed-form COMP of the restricted
+# model (sigma known), a Monte Carlo check that keeps the volume term, and Rissanen's RNML for
+# selection (sigma unknown). implementation.py Section 4 has the same formulas with more comments.
 
 def solution_logsumexp(log_values: np.ndarray) -> float:
-    """Numerically stable log-sum-exp."""
+    """Numerically stable log-sum-exp; -inf entries (zero terms) are allowed."""
+    log_values = np.asarray(log_values, dtype=float)
     max_val = np.max(log_values)
-    return max_val + np.log(np.sum(np.exp(log_values - max_val)))
+    if np.isneginf(max_val):
+        return float('-inf')
+    return float(max_val + np.log(np.sum(np.exp(log_values - max_val))))
 
 
 def solution_gaussian_log_likelihood(
@@ -322,89 +336,118 @@ def solution_gaussian_log_likelihood(
     """Gaussian log-likelihood (in nats, not bits)."""
     residuals = y - predictions
     n = len(y)
-    
+
     if sigma is None:
         sigma = np.sqrt(np.mean(residuals**2))
     sigma = max(sigma, 1e-10)
-    
+
     return -0.5 * n * np.log(2 * np.pi * sigma**2) - \
            np.sum(residuals**2) / (2 * sigma**2)
+
+
+def solution_nml_complexity_polynomial(
+    x: np.ndarray,
+    degree: int,
+    R: float,
+    sigma: float = 1.0
+) -> float:
+    """COMP (bits) of {N(X beta, sigma^2 I): mean((X beta)^2) <= R}, sigma known (closed form)."""
+    n, k = len(x), degree + 1
+    s = np.sqrt(n * R) / sigma                       # allowed radius in noise units
+    log_vk = 0.5 * k * np.log(np.pi) - lgamma(0.5 * k + 1)   # ln(unit-ball volume in R^k)
+    # ln of the k + 1 terms of [V_k s^k + k V_k sum_j C(k-1,j) s^(k-1-j) m_j]; -inf = zero term
+    log_terms = [log_vk + k * np.log(s) if s > 0 else -np.inf]
+    for j in range(k):
+        power = k - 1 - j
+        if power > 0 and s == 0:
+            log_terms.append(-np.inf)                # s^power = 0
+            continue
+        log_m_j = 0.5 * (j - 1) * np.log(2) + lgamma(0.5 * (j + 1))
+        log_terms.append(np.log(k) + log_vk + np.log(comb(k - 1, j))
+                         + (power * np.log(s) if power > 0 else 0.0) + log_m_j)
+    ln_c = solution_logsumexp(np.array(log_terms)) - 0.5 * k * np.log(2 * np.pi)
+    return max(ln_c, 0.0) / np.log(2)                # max() removes round-off at R = 0
 
 
 def solution_estimate_nml_complexity_polynomial(
     x: np.ndarray,
     degree: int,
-    y_range: Tuple[float, float] = (-100, 100),
-    n_samples: int = 1000
-) -> float:
-    """Estimate NML complexity via Monte Carlo."""
+    R: float,
+    sigma: float = 1.0,
+    n_samples: int = 200_000,
+    seed: int = 0
+) -> Tuple[float, float]:
+    """Monte Carlo (uniform box, WITH its volume (2L)^n) estimate of the same integral, in bits."""
     n = len(x)
-    max_log_likelihoods = []
-    
-    for _ in range(n_samples):
-        # Sample random y values
-        y_random = np.random.uniform(y_range[0], y_range[1], n)
-        
-        # Fit polynomial (ML estimate)
-        try:
-            coeffs = np.polyfit(x, y_random, min(degree, n - 1))
-            predictions = np.poly1d(coeffs)(x)
-            
-            # ML sigma
-            residuals = y_random - predictions
-            sigma_ml = np.sqrt(np.mean(residuals**2))
-            sigma_ml = max(sigma_ml, 1e-10)
-            
-            # Log-likelihood
-            log_lik = solution_gaussian_log_likelihood(
-                y_random, predictions, sigma_ml
-            )
-            max_log_likelihoods.append(log_lik)
-        except:
-            continue
-    
-    if not max_log_likelihoods:
-        return 0.0
-    
-    # Complexity = log of average max-likelihood
-    log_liks = np.array(max_log_likelihoods)
-    complexity = solution_logsumexp(log_liks) - np.log(len(log_liks))
-    
-    return complexity / np.log(2)  # Convert to bits
+    rng = np.random.default_rng(seed)
+    r = np.sqrt(n * R)
+    L = r + 8 * sigma
+    V = np.vander(x / max(np.max(np.abs(x)), 1e-300), degree + 1, increasing=True)  # (n, k) design
+    Q, _ = np.linalg.qr(V)                           # (n, k) orthonormal basis of the column space
+    log_w = []
+    for start in range(0, n_samples, 50_000):        # batches bound the memory use
+        m = min(50_000, n_samples - start)
+        Y = rng.uniform(-L, L, size=(m, n))          # (m, n) datasets drawn uniformly from the box
+        Z = Y @ Q                                    # (m, k): least-squares fit coordinates
+        rho = np.linalg.norm(Z, axis=1)              # (m,): length of each fit
+        Z_fit = Z * np.minimum(1.0, r / np.maximum(rho, 1e-300))[:, None]  # restricted ML: shrink onto the ball
+        resid2 = np.sum((Y - Z_fit @ Q.T) ** 2, axis=1)                    # (m,) squared residual norms
+        log_g = -0.5 * n * np.log(2 * np.pi * sigma**2) - resid2 / (2 * sigma**2)
+        log_w.append(log_g + n * np.log(2 * L))      # + log volume: weight = g / q = (2L)^n g
+    log_w = np.concatenate(log_w)
+    log_mean = solution_logsumexp(log_w) - np.log(len(log_w))
+    w = np.exp(log_w - np.max(log_w))
+    se_rel = np.std(w) / np.sqrt(len(w)) / np.mean(w)            # relative standard error of the mean
+    return log_mean / np.log(2), se_rel / np.log(2)
 
 
 def solution_compute_nml_mdl(
     x: np.ndarray,
     y: np.ndarray,
-    degree: int,
-    y_range: Tuple[float, float] = None
+    degree: int
 ) -> Tuple[float, float, float]:
-    """Compute NML-based MDL score."""
-    n = len(x)
-    
-    # Auto y_range
-    if y_range is None:
-        margin = 2 * (np.max(y) - np.min(y))
-        y_range = (np.min(y) - margin, np.max(y) + margin)
-    
-    # Fit polynomial
-    coeffs = np.polyfit(x, y, degree)
-    predictions = np.poly1d(coeffs)(x)
-    residuals = y - predictions
-    
-    # ML sigma
-    sigma_ml = np.sqrt(np.mean(residuals**2))
-    sigma_ml = max(sigma_ml, 1e-10)
-    
-    # Fit term (NLL in bits)
-    fit_term = -solution_gaussian_log_likelihood(y, predictions, sigma_ml) / np.log(2)
-    
-    # Complexity
-    complexity = solution_estimate_nml_complexity_polynomial(
-        x, degree, y_range, n_samples=500
-    )
-    
-    return fit_term + complexity, fit_term, complexity
+    """Rissanen's RNML code length (bits) for unknown sigma: (total, fit, complexity)."""
+    n, k = len(x), degree + 1
+    if k >= n:
+        return float('inf'), float('inf'), float('inf')
+    y_hat = np.polyval(np.polyfit(x, y, degree), x)
+    sigma2_hat = np.mean((y - y_hat) ** 2)            # ML noise variance RSS / n
+    R_hat = np.mean(y_hat ** 2)                       # mean squared fitted value
+    total = ((n - k) / 2 * np.log(sigma2_hat) + k / 2 * np.log(R_hat)
+             - lgamma(k / 2) - lgamma((n - k) / 2) + n / 2 * np.log(n * np.pi)) / np.log(2)
+    fit = 0.5 * n * np.log2(2 * np.pi * np.e * sigma2_hat)
+    return total, fit, total - fit
+
+
+def solution_compare_nml_vs_two_part(
+    x: np.ndarray,
+    y: np.ndarray,
+    max_degree: int = 10
+) -> Dict:
+    """Degree chosen by RNML and by the crude two-part code of Exercise 1."""
+    nml_scores = {d: solution_compute_nml_mdl(x, y, d)[0] for d in range(max_degree + 1)}
+    two_part_scores = {d: solution_two_part_mdl(x, y, d)[0] for d in range(max_degree + 1)}
+    return {
+        'nml_best': min(nml_scores, key=nml_scores.get),
+        'two_part_best': min(two_part_scores, key=two_part_scores.get),
+        'nml_scores': nml_scores,
+        'two_part_scores': two_part_scores,
+    }
+
+
+def solution_visualize_complexity_vs_degree(
+    x: np.ndarray,
+    max_degree: int = 10,
+    R_values: Tuple[float, ...] = (1.0, 100.0, 10000.0),
+    sigma: float = 1.0
+) -> Dict[float, list]:
+    """Print COMP for each degree and bound R; returns {R: [COMP(degree) for degree]}."""
+    table = {}
+    print("   degree: " + "".join(f"{d:>7d}" for d in range(max_degree + 1)))
+    for R in R_values:
+        table[R] = [solution_nml_complexity_polynomial(x, d, R, sigma) for d in range(max_degree + 1)]
+        print(f"   R={R:<7g}" + "".join(f"{c:7.2f}" for c in table[R]))
+    return table
 
 
 # =============================================================================
@@ -500,6 +543,67 @@ def solution_monte_carlo_comparison(
     }
 
 
+# [PATCH 2026-10-18] Reference solutions for the three exercise-5 analyses that had none.
+def solution_analyze_sample_size_effect(
+    true_degree: int = 2,
+    sample_sizes: Tuple[int, ...] = (20, 50, 100, 200, 500),
+    noise_std: float = 1.5,
+    n_trials: int = 50
+) -> Dict[str, List[float]]:
+    """Accuracy of each criterion at each sample size (same seeds 0..n_trials-1 at every size)."""
+    out = {'mdl': [], 'aic': [], 'bic': []}
+    for n in sample_sizes:
+        acc = solution_monte_carlo_comparison(true_degree, n, noise_std, n_trials)
+        for method in out:
+            out[method].append(acc[f'{method}_accuracy'])
+    return out
+
+
+def solution_analyze_noise_level_effect(
+    true_degree: int = 2,
+    n_samples: int = 50,
+    noise_levels: Tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
+    n_trials: int = 50
+) -> Dict[str, List[float]]:
+    """Accuracy of each criterion at each noise level (same seeds at every level)."""
+    out = {'mdl': [], 'aic': [], 'bic': []}
+    for noise_std in noise_levels:
+        acc = solution_monte_carlo_comparison(true_degree, n_samples, noise_std, n_trials)
+        for method in out:
+            out[method].append(acc[f'{method}_accuracy'])
+    return out
+
+
+def solution_when_do_they_disagree(
+    x: np.ndarray,
+    y: np.ndarray,
+    max_degree: int = 10
+) -> Dict:
+    """Degree picked by each criterion and why they differ.
+
+    All three trade the same fit term, -2 ln L at the ML fit, against a price per coefficient:
+    AIC 2, BIC ln n, and the crude two-part code 33 bits = 33 * 2 ln 2 = 45.7 on the -2 ln L
+    scale (plus a small log* term for the degree). Between two degrees lo < hi, a criterion
+    prefers hi exactly when the drop in -2 ln L exceeds its price times (hi - lo).
+    """
+    n = len(x)
+    results = solution_select_with_all_criteria(x, y, max_degree)
+    picks = {m: results[m]['best'] for m in ('mdl', 'aic', 'bic')}
+    lo, hi = min(picks.values()), max(picks.values())
+    if lo == hi:
+        return {'picks': picks, 'methods_agree': True,
+                'explanation': f"all three pick degree {lo}"}
+    # -2 ln L(d) = AIC(d) - 2k with k = d + 2 (coefficients + variance)
+    minus_2ll = {d: results['aic']['scores'][d] - 2 * (d + 2) for d in (lo, hi)}
+    drop, extra = minus_2ll[lo] - minus_2ll[hi], hi - lo
+    explanation = (
+        f"AIC picks {picks['aic']}, BIC {picks['bic']}, two-part MDL {picks['mdl']}. Degree {hi} lowers "
+        f"-2 ln L by {drop:.1f} relative to degree {lo} with {extra} more coefficient(s). A criterion "
+        f"prefers {hi} if that exceeds its price x {extra}: AIC 2, BIC ln n = {np.log(n):.1f}, "
+        f"two-part MDL {33 * 2 * np.log(2):.1f} per coefficient.")
+    return {'picks': picks, 'methods_agree': False, 'fit_gain': drop, 'explanation': explanation}
+
+
 # =============================================================================
 # MAIN: Verify solutions work
 # =============================================================================
@@ -527,8 +631,15 @@ def verify_solutions():
     print(f"  Selected degree: {selector.best_degree}")
     
     print("\n[ok] Exercise 4: NML Complexity")
-    complexity = solution_estimate_nml_complexity_polynomial(x, 2, n_samples=200)
-    print(f"  COMP(degree=2) = {complexity:.1f} bits")
+    # [PATCH 2026-10-18] restricted COMP (sigma known), its Monte Carlo check, RNML selection
+    complexity = solution_nml_complexity_polynomial(x, 2, R=100.0)
+    print(f"  COMP(degree=2, R=100, sigma=1) = {complexity:.2f} bits")
+    x_tiny = np.linspace(0, 10, 3)
+    est, se = solution_estimate_nml_complexity_polynomial(x_tiny, 0, R=4.0)
+    print(f"  tiny case n=3: Monte Carlo {est:.3f} +- {se:.3f} vs closed form "
+          f"{solution_nml_complexity_polynomial(x_tiny, 0, R=4.0):.3f} bits")
+    cmp = solution_compare_nml_vs_two_part(x, y, max_degree=8)
+    print(f"  NML (RNML) selects degree {cmp['nml_best']}, two-part selects {cmp['two_part_best']}")
     
     print("\n[ok] Exercise 5: MDL vs AIC vs BIC")
     mc = solution_monte_carlo_comparison(n_trials=50)

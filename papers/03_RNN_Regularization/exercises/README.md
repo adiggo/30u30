@@ -184,54 +184,46 @@ Exercise 1 is grounded in the Zaremba et al. (2014) paper. Exercises 2-5 go beyo
 
 ## Exercise 5: Full Pipeline [Very Hard] — Our Addition
 
-*Not from the paper. Combines all four techniques into a working training loop.*
+*Not from the paper as a whole: dropout is the paper's; layer norm, weight decay and early stopping are our additions. Part B trains the paper's own model.*
 
-**Goal:** Combine all four regularization techniques in a complete training loop.
+**Goal:** Combine all four regularization techniques in a complete training loop that really trains.
 
 **File:** `exercise_05_full_pipeline.py`
 
 **What you'll learn:**
 - How regularization techniques work together
 - Training vs validation mode switching
-- Managing hidden states in RNNs
-- Real-world training workflow
+- Managing hidden states in RNNs (carried across windows, never dropped)
+- Real-world training workflow: forward, backward, weight decay, clipping, SGD, early stopping
 
 **Tasks:**
 
-1. Implement `train_one_epoch()`:
-   - Set `training=True`
-   - Apply dropout to hidden states
-   - Add L2 penalty to loss
-   - Compute average loss across sequences
+Part A: `RegularizedRNNCell` (TODOs 1-12)
+1. Store sizes and initialize weights (Xavier) and layer-norm parameters
+2. Implement `layer_norm()` and `dropout()` (inverted scaling, training only)
+3. Implement `forward()`: drop the input `x_t` only, never the hidden state carried to the next step (the paper's rule)
+4. Implement `get_weights()` / `set_weights()` (snapshots for early stopping) and `compute_l2_penalty()`
 
-2. Implement `evaluate()`:
-   - Set `training=False` (no dropout!)
-   - Same computation but no weight decay in loss
-   - Return validation loss
-
-3. Implement `train_with_regularization()`:
-   - Initialize early stopping monitor
-   - Loop through epochs: train, evaluate, check early stopping, print progress
-   - Return training history
-
-4. Track metrics:
-   - Training loss per epoch
-   - Validation loss per epoch
-   - Best epoch and best val loss
-   - Stop reason (early_stop or max_epochs)
+Part B: `train_regularized_rnn()` (TODOs 13-15), a real training loop on a Penn Treebank slice. The model is the paper's 2-layer `LSTMLanguageModel` from `../implementation.py`, whose `keep_prob` sets the dropout. For each epoch:
+1. Training (dropout on): for each window, `forward` → `backward` (BPTT) → add `weight_decay * W` to each weight gradient → `clip_grad_norm` → `sgd_update`
+2. Validation (dropout off): `evaluate()` from `../train_minimal.py` returns the perplexity; record its log as the validation loss
+3. Early stopping: snapshot the weights when validation improves, stop after `patience` epochs without improvement, and always finish with the best weights restored
+4. Track `train_loss`, `val_loss`, `epochs_trained`, `stopped_early` and `best_epoch`
 
 **Success criteria:**
-- Training loss decreases over epochs
-- Validation loss tracked separately
+- Every parameter array changes, and the validation loss falls well below its untrained value (about ln 10,000 = 9.2 nats)
+- Validation loss tracked separately, with dropout off
 - Early stopping triggers correctly
-- Model state saved at best epoch
+- The model ends with its best-validation weights
 - All techniques work together
 
+Penn Treebank is read from `../data/ptb/` (or `$PTB_DIR`) and downloaded (~6 MB) on first use. The tests take a few seconds; the solution's demo (`python solutions/05_full_pipeline.py`) trains three small models in about 2 minutes of CPU. It compares no regularization, dropout, and dropout plus weight decay. Without regularization, the validation perplexity turns upward after a few epochs and early stopping restores the best weights; the dropout runs end lower.
+
 **Hints:**
-- Don't forget `training=False` during validation!
-- Reset hidden states between sequences
+- Don't forget `training=False` during validation (`evaluate()` does it for you)
+- Reset the hidden state at the start of each epoch; carry it across windows within an epoch
+- `grads[k] += ...` modifies the gradient in place; skip biases (keys starting with `b`)
 - Use exercises 1-4 as building blocks
-- Start with simple mock model for testing
 
 ---
 
@@ -272,7 +264,7 @@ Exercise 3 (Weight Decay): Missing the 0.5 factor in penalty. Applying to biases
 
 Exercise 4 (Early Stopping): Not resetting counter on improvement. Using <= instead of <.
 
-Exercise 5 (Full Pipeline): Dropout during validation (should be off). Not resetting hidden states.
+Exercise 5 (Full Pipeline): Dropout during validation (should be off). Not resetting hidden states. Forgetting to restore the best weights at the end.
 
 ---
 

@@ -2,464 +2,276 @@
 Solution to Exercise 5: LSTM vs GRU
 ===================================
 
-Complete implementation of GRU and detailed comparison with LSTM.
+A GRU written from scratch next to the repo's LSTM, both trained the same way on the day's text
+(data/input.txt; the last 10% held out): one 25-character window per update, BPTT, and the same
+Adagrad rule, learning rate, initial-weight scale, windows and number of updates. The comparison
+reports what is measured: parameter count, time per update, training loss and held-out loss.
+
+GRU equations (as drawn in Colah's post; biases added):
+    z_t = sigma(W_z [h_{t-1}, x_t] + b_z)              update gate
+    r_t = sigma(W_r [h_{t-1}, x_t] + b_r)              reset gate
+    h~_t = tanh(W_h [r_t * h_{t-1}, x_t] + b_h)        candidate (reset applied before the matmul)
+    h_t = (1 - z_t) * h_{t-1} + z_t * h~_t
+Two gates plus a candidate, versus the LSTM's three gates plus a candidate, and no separate cell state.
+Cho et al. (2014, Eqs. 5-8) write the same model with z and 1 - z swapped (z keeps the old state);
+PyTorch's nn.GRU also applies r after the recurrent matmul, r * (W_hn h + b_hn), a slightly different
+model. validation/day02_solution_grads.py checks GRU.backward() against torch.autograd.
+
+Run (about 1 minute on one CPU core: 2 models x 3 seeds x 1200 updates):
+    python exercises/solutions/exercise_05_solution.py [--iterations 1200] [--seeds 0,1,2] [--plot PATH]
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-import time
+import argparse
+import os
 import sys
-sys.path.append('..')
+import time
 
-from implementation import LSTM  # [PATCH 2026-10-18] module 'lstm_implementation' does not exist
+import numpy as np
+
+# [PATCH 2026-10-18] import path from this file's location, so the script runs from any directory
+DAY_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+sys.path.insert(0, DAY_DIR)
+
+from implementation import LSTM, sigmoid, softmax  # noqa: E402
 
 
 # ============================================================================
 # GRU IMPLEMENTATION
+# [PATCH 2026-10-18] interface of the exercise skeleton (backward() stores self.grads,
+# update_weights(learning_rate)); Adagrad and init scale as in implementation.LSTM for a fair race
 # ============================================================================
 
 class GRU:
-    """
-    Gated Recurrent Unit (GRU) implementation.
-    
-    GRU is a simplified variant of LSTM with 2 gates instead of 3:
-    - Reset gate (r): controls how much past information to forget
-    - Update gate (z): controls how much new information to accept
-    
-    Key difference from LSTM:
-    - No separate cell state (only hidden state)
-    - Fewer parameters (faster training)
-    - Often performs similarly to LSTM
-    
-    Equations:
-        z_t = σ(W_z [h_{t-1}, x_t])      # Update gate
-        r_t = σ(W_r [h_{t-1}, x_t])      # Reset gate
-        h̃_t = tanh(W [r_t ⊙ h_{t-1}, x_t])  # Candidate hidden state
-        h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h̃_t  # New hidden state
-    """
-    
-    def __init__(self, vocab_size, hidden_size, output_size):
-        self.vocab_size = vocab_size
+    """Gated Recurrent Unit with a softmax output layer, trained like implementation.LSTM."""
+
+    def __init__(self, input_size, hidden_size, output_size, learning_rate=0.05):
+        self.input_size = input_size              # one-hot input size (the vocabulary)
+        self.vocab_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
-        
-        # Initialize parameters
-        scale = 0.01
-        input_size = hidden_size + vocab_size
-        
-        # Update gate parameters
-        self.Wz = np.random.randn(hidden_size, input_size) * scale
+        self.learning_rate = learning_rate
+        scale = np.sqrt(2.0 / (hidden_size + input_size))   # same init scale as implementation.LSTM
+        cols = hidden_size + input_size
+        self.Wz = np.random.randn(hidden_size, cols) * scale   # update gate, acts on [h; x]
         self.bz = np.zeros((hidden_size, 1))
-        
-        # Reset gate parameters
-        self.Wr = np.random.randn(hidden_size, input_size) * scale
+        self.Wr = np.random.randn(hidden_size, cols) * scale   # reset gate, acts on [h; x]
         self.br = np.zeros((hidden_size, 1))
-        
-        # Candidate hidden state parameters
-        self.Wh = np.random.randn(hidden_size, input_size) * scale
+        self.Wh = np.random.randn(hidden_size, cols) * scale   # candidate, acts on [r * h; x]
         self.bh = np.zeros((hidden_size, 1))
-        
-        # Output layer parameters
         self.Why = np.random.randn(output_size, hidden_size) * scale
         self.by = np.zeros((output_size, 1))
-    
+        self.memory = {name: np.zeros_like(p) for name, p in self.params().items()}   # Adagrad sums
+        self.cache = None
+        self.grads = None
+
+    def params(self):
+        return {'Wz': self.Wz, 'bz': self.bz, 'Wr': self.Wr, 'br': self.br,
+                'Wh': self.Wh, 'bh': self.bh, 'Why': self.Why, 'by': self.by}
+
     def forward(self, inputs, targets, h_prev):
-        """
-        Forward pass through GRU.
-        
-        Args:
-            inputs: List of input indices
-            targets: List of target indices
-            h_prev: Previous hidden state
-            
-        Returns:
-            loss: Cross-entropy loss
-            h: Final hidden state
-        """
-        xs, hs, ys, ps = {}, {}, {}, {}
-        zs, rs, h_tildes = {}, {}, {}  # Store gates and candidates
-        
+        """Returns (summed cross-entropy loss, last hidden state); keeps a cache for backward()."""
+        xs, hs, zs, rs, h_tildes, combs, rcombs, ys, ps = {}, {}, {}, {}, {}, {}, {}, {}, {}
         hs[-1] = np.copy(h_prev)
-        loss = 0
-        
-        for t, (inp, target) in enumerate(zip(inputs, targets)):
-            # One-hot encode input
-            xs[t] = np.zeros((self.vocab_size, 1))
-            xs[t][inp] = 1
-            
-            # Concatenate previous hidden state and input
-            combined = np.vstack([hs[t-1], xs[t]])
-            
-            # Update gate: z_t = σ(W_z [h_{t-1}, x_t])
-            zs[t] = sigmoid(np.dot(self.Wz, combined) + self.bz)
-            
-            # Reset gate: r_t = σ(W_r [h_{t-1}, x_t])
-            rs[t] = sigmoid(np.dot(self.Wr, combined) + self.br)
-            
-            # Candidate hidden state: h̃_t = tanh(W [r_t ⊙ h_{t-1}, x_t])
-            reset_combined = np.vstack([rs[t] * hs[t-1], xs[t]])
-            h_tildes[t] = np.tanh(np.dot(self.Wh, reset_combined) + self.bh)
-            
-            # New hidden state: h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h̃_t
-            hs[t] = (1 - zs[t]) * hs[t-1] + zs[t] * h_tildes[t]
-            
-            # Output layer
-            ys[t] = np.dot(self.Why, hs[t]) + self.by
-            
-            # Softmax
-            ps[t] = np.exp(ys[t]) / np.sum(np.exp(ys[t]))
-            
-            # Cross-entropy loss
-            loss += -np.log(ps[t][target, 0])
-        
-        # Store intermediate values for backward pass
-        self.cache = (xs, hs, zs, rs, h_tildes, ys, ps, targets)
-        
-        return loss, hs[len(inputs)-1]
-    
+        loss = 0.0
+        for t in range(len(inputs)):
+            xs[t] = np.zeros((self.input_size, 1))
+            xs[t][inputs[t]] = 1                                          # one-hot column (V, 1)
+            combs[t] = np.vstack([hs[t - 1], xs[t]])                      # (H+V, 1) = [h_{t-1}; x_t]
+            zs[t] = sigmoid(self.Wz @ combs[t] + self.bz)                 # (H, H+V) @ (H+V, 1) -> (H, 1)
+            rs[t] = sigmoid(self.Wr @ combs[t] + self.br)
+            rcombs[t] = np.vstack([rs[t] * hs[t - 1], xs[t]])             # (H+V, 1) = [r * h_{t-1}; x_t]
+            h_tildes[t] = np.tanh(self.Wh @ rcombs[t] + self.bh)
+            hs[t] = (1 - zs[t]) * hs[t - 1] + zs[t] * h_tildes[t]         # elementwise interpolation
+            ys[t] = self.Why @ hs[t] + self.by                            # (V, 1) logits
+            ps[t] = softmax(ys[t])
+            loss += -np.log(ps[t][targets[t], 0])
+        self.cache = {'xs': xs, 'hs': hs, 'zs': zs, 'rs': rs, 'h_tildes': h_tildes, 'combs': combs,
+                      'rcombs': rcombs, 'ys': ys, 'ps': ps, 'targets': list(targets)}
+        return loss, hs[len(inputs) - 1]
+
     def backward(self):
-        """
-        Backward pass through GRU (BPTT).
-        
-        Returns dictionary of gradients.
-        """
-        xs, hs, zs, rs, h_tildes, ys, ps, targets = self.cache
-        
-        # Initialize gradients
-        dWz, dbz = np.zeros_like(self.Wz), np.zeros_like(self.bz)
-        dWr, dbr = np.zeros_like(self.Wr), np.zeros_like(self.br)
-        dWh, dbh = np.zeros_like(self.Wh), np.zeros_like(self.bh)
-        dWhy, dby = np.zeros_like(self.Why), np.zeros_like(self.by)
-        
-        dh_next = np.zeros_like(hs[0])
-        
-        # Backward pass through time
-        for t in reversed(range(len(targets))):
-            # Output layer gradient
-            dy = np.copy(ps[t])
-            dy[targets[t]] -= 1
-            
-            dWhy += np.dot(dy, hs[t].T)
-            dby += dy
-            
-            # Hidden state gradient
-            dh = np.dot(self.Why.T, dy) + dh_next
-            
-            # Candidate hidden state gradient
-            dh_tilde = dh * zs[t]
-            dh_tilde_raw = dh_tilde * (1 - h_tildes[t]**2)  # tanh derivative
-            
-            combined_reset = np.vstack([rs[t] * hs[t-1], xs[t]])
-            dWh += np.dot(dh_tilde_raw, combined_reset.T)
-            dbh += dh_tilde_raw
-            
-            # Reset gate gradient
-            dr = np.dot(self.Wh.T, dh_tilde_raw)[:self.hidden_size] * hs[t-1]
-            dr_raw = dr * rs[t] * (1 - rs[t])  # sigmoid derivative
-            
-            combined = np.vstack([hs[t-1], xs[t]])
-            dWr += np.dot(dr_raw, combined.T)
-            dbr += dr_raw
-            
-            # Update gate gradient
-            dz = dh * (h_tildes[t] - hs[t-1])
-            dz_raw = dz * zs[t] * (1 - zs[t])  # sigmoid derivative
-            
-            dWz += np.dot(dz_raw, combined.T)
-            dbz += dz_raw
-            
-            # Gradient for next timestep
-            dh_next = dh * (1 - zs[t])
-            dh_next += np.dot(self.Wz.T, dz_raw)[:self.hidden_size]
-            dh_next += np.dot(self.Wr.T, dr_raw)[:self.hidden_size]
-            dh_next += np.dot(self.Wh.T, dh_tilde_raw)[:self.hidden_size] * rs[t]
-        
-        # Clip gradients
-        for dparam in [dWz, dWr, dWh, dWhy, dbz, dbr, dbh, dby]:
-            np.clip(dparam, -5, 5, out=dparam)
-        
-        return {
-            'dWz': dWz, 'dbz': dbz,
-            'dWr': dWr, 'dbr': dbr,
-            'dWh': dWh, 'dbh': dbh,
-            'dWhy': dWhy, 'dby': dby
-        }
-    
-    def parameter_count(self):
-        """Count total number of parameters."""
-        count = 0
-        for param in [self.Wz, self.bz, self.Wr, self.br, 
-                     self.Wh, self.bh, self.Why, self.by]:
-            count += param.size
-        return count
+        """BPTT through the last forward(); stores and returns grads keyed like params()."""
+        c = self.cache
+        H = self.hidden_size
+        grads = {name: np.zeros_like(p) for name, p in self.params().items()}
+        dh_next = np.zeros((H, 1))
+        for t in reversed(range(len(c['targets']))):
+            dy = np.copy(c['ps'][t])
+            dy[c['targets'][t]] -= 1                                      # softmax + cross-entropy
+            grads['Why'] += dy @ c['hs'][t].T                             # (V, 1) @ (1, H) -> (V, H)
+            grads['by'] += dy
+            dh = self.Why.T @ dy + dh_next                                # (H, 1)
+
+            h_prev, z, r, h_tilde = c['hs'][t - 1], c['zs'][t], c['rs'][t], c['h_tildes'][t]
+            # h_t = (1 - z) * h_prev + z * h~
+            da_h = dh * z * (1 - h_tilde ** 2)                            # through tanh of the candidate
+            da_z = dh * (h_tilde - h_prev) * z * (1 - z)                  # through sigmoid of z
+            grads['Wh'] += da_h @ c['rcombs'][t].T                        # (H, 1) @ (1, H+V)
+            grads['bh'] += da_h
+            d_rcomb = self.Wh.T @ da_h                                    # (H+V, 1): grad of [r*h; x]
+            da_r = d_rcomb[:H] * h_prev * r * (1 - r)                     # first H rows hold d(r*h)
+            grads['Wz'] += da_z @ c['combs'][t].T
+            grads['bz'] += da_z
+            grads['Wr'] += da_r @ c['combs'][t].T
+            grads['br'] += da_r
+            dh_next = (dh * (1 - z)                                       # direct path through (1 - z)
+                       + d_rcomb[:H] * r                                  # through the candidate's r*h
+                       + (self.Wz.T @ da_z)[:H]                           # through the update gate
+                       + (self.Wr.T @ da_r)[:H])                          # through the reset gate
+        for g in grads.values():
+            np.clip(g, -5, 5, out=g)                                      # same clipping as the LSTM
+        self.grads = grads
+        return grads
+
+    def update_weights(self, learning_rate=None):
+        """Adagrad step with the gradients from backward(), the same rule as LSTM.update_weights."""
+        lr = self.learning_rate if learning_rate is None else learning_rate
+        for name, p in self.params().items():
+            self.memory[name] += self.grads[name] * self.grads[name]
+            p -= lr * self.grads[name] / np.sqrt(self.memory[name] + 1e-8)   # in place
+
+    def sample(self, h, seed_idx, n, temperature=1.0):
+        """Generate n character indices, one forward() step at a time."""
+        idx, out = seed_idx, []
+        for _ in range(n):
+            _, h = self.forward([idx], [idx], h)                          # target only feeds unused loss
+            p = softmax(self.cache['ys'][0] / temperature).ravel()        # (V, 1) -> (V,)
+            idx = int(np.random.choice(self.output_size, p=p))
+            out.append(idx)
+        return out
 
 
-def sigmoid(x):
-    """Numerically stable sigmoid."""
-    return np.where(x >= 0,
-                    1 / (1 + np.exp(-x)),
-                    np.exp(x) / (1 + np.exp(x)))
+def count_parameters(model):
+    """Number of trainable numbers in an implementation.LSTM or a GRU."""
+    # [PATCH 2026-10-18] the old code called a parameter_count() method the repo LSTM does not have
+    if isinstance(model, GRU):
+        arrays = model.params().values()
+    else:
+        arrays = [model.Wf, model.Wi, model.Wc, model.Wo, model.Why,
+                  model.bf, model.bi, model.bc, model.bo, model.by]
+    return int(sum(a.size for a in arrays))
 
 
 # ============================================================================
 # COMPARISON STUDY
 # ============================================================================
 
-def compare_lstm_gru(data, char_to_idx, hidden_size=128, seq_length=25,
-                    num_iterations=1000, learning_rate=0.01):
+def _evaluate(model, ids, seq_length):
+    """Held-out mean cross-entropy (nats/char): non-overlapping windows from a zero state."""
+    total, count = 0.0, 0
+    H = model.hidden_size
+    for p in range(0, len(ids) - 1, seq_length):
+        targets = ids[p + 1:p + seq_length + 1].tolist()
+        inputs = ids[p:p + len(targets)].tolist()
+        if isinstance(model, GRU):
+            loss, _ = model.forward(inputs, targets, np.zeros((H, 1)))
+        else:
+            loss, _, _, _ = model.forward(inputs, targets, np.zeros((H, 1)), np.zeros((H, 1)))
+        total += loss
+        count += len(targets)
+    return total / count
+
+
+def compare_lstm_gru(data, char_to_idx, hidden_size=32, seq_length=25,
+                     num_iterations=1200, learning_rate=0.05, seed=0, val_fraction=0.1, verbose=True):
     """
-    Train both LSTM and GRU on same data and compare.
-    
-    Metrics to compare:
-    1. Training loss convergence
-    2. Training speed (time per iteration)
-    3. Parameter count
-    4. Memory usage
-    5. Generation quality
+    Train an LSTM and a GRU on the same windows with the same optimizer; measure both.
+
+    Returns (results, lstm, gru) with results[name] = {'params', 'losses' (nats/char per update),
+    'times' ([seconds]), 'val_loss' (nats/char)} for name in ('LSTM', 'GRU').
     """
-    print("="*70)
-    print("LSTM vs GRU COMPARISON")
-    print("="*70)
-    
+    # [PATCH 2026-10-18] the old loop called lstm.backward() without arguments, read gradient keys
+    # that do not exist and used plain SGD for one model and Adagrad-free updates for the other
+    log = print if verbose else (lambda *a, **k: None)
     vocab_size = len(char_to_idx)
-    
-    # Initialize models
-    lstm = LSTM(vocab_size, hidden_size, vocab_size)
-    gru = GRU(vocab_size, hidden_size, vocab_size)
-    
-    # Compare parameter counts
-    print("\n[1] PARAMETER COUNT")
-    print("-" * 70)
-    print(f"LSTM parameters: {lstm.parameter_count():,}")
-    print(f"GRU parameters:  {gru.parameter_count():,}")
-    print(f"Difference:      {lstm.parameter_count() - gru.parameter_count():,}")
-    print(f"GRU has {(1 - gru.parameter_count()/lstm.parameter_count())*100:.1f}% fewer parameters")
-    
-    # Training comparison
-    print("\n[2] TRAINING COMPARISON")
-    print("-" * 70)
-    
-    results = {
-        'LSTM': {'losses': [], 'times': []},
-        'GRU': {'losses': [], 'times': []}
-    }
-    
-    # Train LSTM
-    print("\nTraining LSTM...")
-    lstm_start = time.time()
-    
-    for iteration in range(num_iterations):
-        # Sample batch
-        p = np.random.randint(0, len(data) - seq_length - 1)
-        inputs = [char_to_idx[ch] for ch in data[p:p+seq_length]]
-        targets = [char_to_idx[ch] for ch in data[p+1:p+seq_length+1]]
-        
-        # Forward pass
-        h = np.zeros((hidden_size, 1))
-        c = np.zeros((hidden_size, 1))
-        loss, h, c = lstm.forward(inputs, targets, h, c)
-        
-        # Backward pass
-        grads = lstm.backward()
-        
-        # Update (simplified - should use proper optimizer)
-        for param_name in ['Wf', 'Wi', 'Wc', 'Wo', 'Why', 
-                          'bf', 'bi', 'bc', 'bo', 'by']:
-            param = getattr(lstm, param_name)
-            grad = grads['d' + param_name]
-            param -= learning_rate * grad
-        
-        results['LSTM']['losses'].append(loss)
-        
-        if (iteration + 1) % 100 == 0:
-            print(f"  Iteration {iteration+1}/{num_iterations}, Loss: {loss:.4f}")
-    
-    lstm_time = time.time() - lstm_start
-    results['LSTM']['times'].append(lstm_time)
-    print(f"LSTM training time: {lstm_time:.2f}s")
-    
-    # Train GRU
-    print("\nTraining GRU...")
-    gru_start = time.time()
-    
-    for iteration in range(num_iterations):
-        # Sample batch
-        p = np.random.randint(0, len(data) - seq_length - 1)
-        inputs = [char_to_idx[ch] for ch in data[p:p+seq_length]]
-        targets = [char_to_idx[ch] for ch in data[p+1:p+seq_length+1]]
-        
-        # Forward pass
-        h = np.zeros((hidden_size, 1))
-        loss, h = gru.forward(inputs, targets, h)
-        
-        # Backward pass
-        grads = gru.backward()
-        
-        # Update
-        for param_name in ['Wz', 'Wr', 'Wh', 'Why', 'bz', 'br', 'bh', 'by']:
-            param = getattr(gru, param_name)
-            grad = grads['d' + param_name]
-            param -= learning_rate * grad
-        
-        results['GRU']['losses'].append(loss)
-        
-        if (iteration + 1) % 100 == 0:
-            print(f"  Iteration {iteration+1}/{num_iterations}, Loss: {loss:.4f}")
-    
-    gru_time = time.time() - gru_start
-    results['GRU']['times'].append(gru_time)
-    print(f"GRU training time: {gru_time:.2f}s")
-    
+    ids = np.array([char_to_idx[ch] for ch in data])
+    n_val = max(seq_length + 1, int(len(ids) * val_fraction))
+    train_ids, val_ids = ids[:-n_val], ids[-n_val:]           # last n_val characters held out
+
+    np.random.seed(seed)
+    lstm = LSTM(vocab_size, hidden_size, seq_length, learning_rate=learning_rate)
+    np.random.seed(seed)
+    gru = GRU(vocab_size, hidden_size, vocab_size, learning_rate=learning_rate)
+
+    results = {}
+    for name, model in (('LSTM', lstm), ('GRU', gru)):
+        window_rng = np.random.RandomState(seed)               # same windows for both models
+        losses = []
+        start = time.time()
+        for iteration in range(num_iterations):
+            p = window_rng.randint(0, len(train_ids) - seq_length)
+            inputs = train_ids[p:p + seq_length].tolist()
+            targets = train_ids[p + 1:p + seq_length + 1].tolist()
+            h0 = np.zeros((hidden_size, 1))
+            if name == 'LSTM':
+                loss, _, _, cache = model.forward(inputs, targets, h0, np.zeros((hidden_size, 1)))
+                model.update_weights(model.backward(inputs, targets, cache))   # BPTT + Adagrad
+            else:
+                loss, _ = model.forward(inputs, targets, h0)
+                model.backward()                                                # BPTT
+                model.update_weights(learning_rate)                             # Adagrad
+            losses.append(loss / seq_length)
+        elapsed = time.time() - start
+        results[name] = {'params': count_parameters(model), 'losses': losses, 'times': [elapsed],
+                         'val_loss': _evaluate(model, val_ids, seq_length)}
+        log(f"  seed {seed} {name:4s}: train loss (last 100) {np.mean(losses[-100:]):.3f}, "
+            f"held-out {results[name]['val_loss']:.3f} nats/char, "
+            f"{1000 * elapsed / num_iterations:.2f} ms/update")
     return results, lstm, gru
 
 
 def analyze_comparison(results):
-    """Analyze and report comparison results."""
-    print("\n" + "="*70)
-    print("COMPARISON ANALYSIS")
-    print("="*70)
-    
-    lstm_losses = results['LSTM']['losses']
-    gru_losses = results['GRU']['losses']
-    
-    print("\n[1] FINAL PERFORMANCE")
-    print("-" * 70)
-    print(f"LSTM final loss: {np.mean(lstm_losses[-100:]):.4f}")
-    print(f"GRU final loss:  {np.mean(gru_losses[-100:]):.4f}")
-    
-    diff = np.mean(lstm_losses[-100:]) - np.mean(gru_losses[-100:])
-    if abs(diff) < 0.1:
-        print("→ Similar performance!")
-    elif diff > 0:
-        print(f"→ GRU performs better by {diff:.4f}")
-    else:
-        print(f"→ LSTM performs better by {-diff:.4f}")
-    
-    print("\n[2] TRAINING SPEED")
-    print("-" * 70)
-    lstm_time = results['LSTM']['times'][0]
-    gru_time = results['GRU']['times'][0]
-    
-    print(f"LSTM: {lstm_time:.2f}s")
-    print(f"GRU:  {gru_time:.2f}s")
-    print(f"Speedup: {lstm_time/gru_time:.2f}x")
-    
-    if gru_time < lstm_time:
-        print("→ GRU is faster!")
-    
-    print("\n[3] CONVERGENCE SPEED")
-    print("-" * 70)
-    
-    # Find iteration where loss < threshold
-    threshold = 1.5
-    lstm_converge = next((i for i, loss in enumerate(lstm_losses) if loss < threshold), None)
-    gru_converge = next((i for i, loss in enumerate(gru_losses) if loss < threshold), None)
-    
-    if lstm_converge and gru_converge:
-        print(f"LSTM converged at iteration: {lstm_converge}")
-        print(f"GRU converged at iteration:  {gru_converge}")
-        if gru_converge < lstm_converge:
-            print("→ GRU converges faster!")
-        else:
-            print("→ LSTM converges faster!")
-    
-    print("\n[4] SUMMARY")
-    print("-" * 70)
-    print("✓ GRU typically:")
-    print("  - Fewer parameters (25-30% less)")
-    print("  - Faster training (10-20% faster)")
-    print("  - Similar final performance")
-    print("  - Simpler architecture (easier to understand)")
-    
-    print("\n✓ LSTM typically:")
-    print("  - More expressive (separate cell state)")
-    print("  - Better for very long sequences")
-    print("  - More control (3 gates vs 2)")
-    print("  - Established track record")
+    """Print the measured comparison; `results` is one compare_lstm_gru() result or a list (seeds)."""
+    # [PATCH 2026-10-18] measured numbers only (the old summary asserted '25-30% fewer parameters,
+    # 10-20% faster' without measuring)
+    runs = results if isinstance(results, list) else [results]
+    lstm_p, gru_p = runs[0]['LSTM']['params'], runs[0]['GRU']['params']
+    print("\n" + "=" * 70)
+    print(f"LSTM vs GRU over {len(runs)} seed(s)")
+    print("=" * 70)
+    print(f"parameters: LSTM {lstm_p:,}, GRU {gru_p:,} (GRU has {100 * (1 - gru_p / lstm_p):.1f}% fewer: "
+          f"3 instead of 4 matrices acting on [h; x])")
+    for name in ('LSTM', 'GRU'):
+        val = [r[name]['val_loss'] for r in runs]
+        ms = [1000 * r[name]['times'][0] / len(r[name]['losses']) for r in runs]
+        last = [np.mean(r[name]['losses'][-100:]) for r in runs]
+        print(f"  {name:4s} held-out {' '.join(f'{v:.3f}' for v in val)} (mean {np.mean(val):.3f}), "
+              f"train last 100 {np.mean(last):.3f}, {np.mean(ms):.2f} ms/update")
+    d = np.array([r['GRU']['val_loss'] - r['LSTM']['val_loss'] for r in runs])   # per seed
+    verdict = ('GRU better in every seed' if d.max() < 0 else
+               'LSTM better in every seed' if d.min() > 0 else 'mixed: within seed noise')
+    speed = (np.mean([r['LSTM']['times'][0] for r in runs]) /
+             np.mean([r['GRU']['times'][0] for r in runs]))
+    print(f"held-out GRU - LSTM: mean {d.mean():+.3f} nats/char (min {d.min():+.3f}, max {d.max():+.3f})"
+          f": {verdict}")
+    print(f"time per update: LSTM / GRU = {speed:.2f} (at batch size 1 NumPy time is mostly per-operation "
+          f"overhead, so this tracks the number of operations more than the parameter count)")
+    return d
 
 
 def visualize_comparison(results, save_path='lstm_vs_gru.png'):
-    """Create comprehensive comparison visualization."""
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    
-    lstm_losses = results['LSTM']['losses']
-    gru_losses = results['GRU']['losses']
-    
-    # Panel 1: Loss curves
-    ax = axes[0, 0]
-    window = 50
-    lstm_smoothed = np.convolve(lstm_losses, np.ones(window)/window, mode='valid')
-    gru_smoothed = np.convolve(gru_losses, np.ones(window)/window, mode='valid')
-    
-    ax.plot(lstm_smoothed, label='LSTM', color='blue', linewidth=2)
-    ax.plot(gru_smoothed, label='GRU', color='red', linewidth=2)
-    ax.set_xlabel('Iteration', fontsize=12)
-    ax.set_ylabel('Loss (smoothed)', fontsize=12)
-    ax.set_title('Training Loss Comparison', fontsize=14, fontweight='bold')
-    ax.legend(fontsize=12)
-    ax.grid(True, alpha=0.3)
-    
-    # Panel 2: Direct comparison (scatter)
-    ax = axes[0, 1]
-    ax.scatter(lstm_losses[::10], gru_losses[::10], alpha=0.5, s=20)
-    ax.plot([min(lstm_losses), max(lstm_losses)], 
-           [min(lstm_losses), max(lstm_losses)],
-           'k--', label='Equal performance', linewidth=2)
-    ax.set_xlabel('LSTM Loss', fontsize=12)
-    ax.set_ylabel('GRU Loss', fontsize=12)
-    ax.set_title('Loss Correlation', fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Panel 3: Parameter count comparison
-    ax = axes[1, 0]
-    # Placeholder - would need actual model instances
-    categories = ['Update/Forget', 'Input/Reset', 'Cell/Hidden', 'Output']
-    lstm_params = [25, 25, 25, 25]  # Simplified
-    gru_params = [20, 20, 20, 20]
-    
-    x = np.arange(len(categories))
-    width = 0.35
-    
-    ax.bar(x - width/2, lstm_params, width, label='LSTM', color='blue', alpha=0.7)
-    ax.bar(x + width/2, gru_params, width, label='GRU', color='red', alpha=0.7)
-    ax.set_xticks(x)
-    ax.set_xticklabels(categories, rotation=45, ha='right')
-    ax.set_ylabel('Parameters (%)', fontsize=12)
-    ax.set_title('Parameter Distribution', fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Panel 4: Summary table
-    ax = axes[1, 1]
-    ax.axis('off')
-    
-    summary = [
-        ['Metric', 'LSTM', 'GRU', 'Winner'],
-        ['', '', '', ''],
-        ['Parameters', 'More', 'Less', 'GRU'],
-        ['Training Speed', 'Slower', 'Faster', 'GRU'],
-        ['Performance', 'Similar', 'Similar', 'Tie'],
-        ['Complexity', 'Higher', 'Lower', 'GRU'],
-        ['Long Sequences', 'Better', 'Good', 'LSTM'],
-        ['Memory Usage', 'Higher', 'Lower', 'GRU']
-    ]
-    
-    table = ax.table(cellText=summary, cellLoc='left', loc='center',
-                    colWidths=[0.3, 0.2, 0.2, 0.2])
-    table.auto_set_font_size(False)
-    table.set_fontsize(11)
-    table.scale(1, 2.5)
-    
-    # Style header row
-    for i in range(4):
-        table[(0, i)].set_facecolor('#40466e')
-        table[(0, i)].set_text_props(weight='bold', color='white')
-    
+    """Training curves and the measured bars for one compare_lstm_gru() result."""
+    # [PATCH 2026-10-18] the old figure had made-up parameter bars and a fixed 'winner' table
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    for name in ('LSTM', 'GRU'):
+        smoothed = np.convolve(results[name]['losses'], np.ones(50) / 50, mode='valid')  # moving average
+        axes[0].plot(smoothed, label=name, linewidth=2)
+    axes[0].set_xlabel('Update')
+    axes[0].set_ylabel('Training loss (nats/char, smoothed)')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    names = ['LSTM', 'GRU']
+    axes[1].bar(names, [results[n]['params'] for n in names])
+    axes[1].set_title('Parameters')
+    axes[2].bar(names, [1000 * results[n]['times'][0] / len(results[n]['losses']) for n in names])
+    axes[2].set_title('ms per update')
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    print(f"\n✓ Visualization saved to {save_path}")
-    
+    plt.savefig(save_path, dpi=120, bbox_inches='tight')
+    print(f"Figure saved to {save_path}")
     return fig
 
 
@@ -468,53 +280,43 @@ def visualize_comparison(results, save_path='lstm_vs_gru.png'):
 # ============================================================================
 
 if __name__ == "__main__":
-    print(__doc__)
-    
-    print("\n" + "="*70)
-    print("LSTM vs GRU: COMPREHENSIVE COMPARISON")
-    print("="*70)
-    
-    print("\nThis solution provides:")
-    print("  1. Full GRU implementation from scratch")
-    print("  2. Side-by-side training comparison")
-    print("  3. Parameter count analysis")
-    print("  4. Training speed benchmarks")
-    print("  5. Performance comparison")
-    print("  6. Comprehensive visualizations")
-    
-    print("\n" + "-"*70)
-    print("KEY DIFFERENCES")
-    print("-"*70)
-    
-    print("\nLSTM:")
-    print("  • 3 gates (forget, input, output)")
-    print("  • Separate cell state and hidden state")
-    print("  • More parameters")
-    print("  • Explicit memory management")
-    
-    print("\nGRU:")
-    print("  • 2 gates (update, reset)")
-    print("  • Single hidden state (no cell state)")
-    print("  • Fewer parameters (25-30% less)")
-    print("  • Implicit memory through gating")
-    
-    print("\n" + "-"*70)
-    print("WHEN TO USE EACH")
-    print("-"*70)
-    
-    print("\n✓ Use LSTM when:")
-    print("  - Very long sequences (>100 steps)")
-    print("  - Need precise memory control")
-    print("  - Have lots of training data")
-    print("  - Computational cost not critical")
-    
-    print("\n✓ Use GRU when:")
-    print("  - Medium-length sequences")
-    print("  - Want faster training")
-    print("  - Limited training data")
-    print("  - Need simpler architecture")
-    print("  - Memory/compute constrained")
-    
-    print("\n" + "="*70)
-    print("In practice: Try both and see what works!")
-    print("="*70)
+    # [PATCH 2026-10-18] runs the comparison (it used to print general claims only)
+    parser = argparse.ArgumentParser(description='Exercise 5 solution: LSTM vs GRU')
+    parser.add_argument('--iterations', type=int, default=1200, help='updates per model and seed')
+    parser.add_argument('--hidden-size', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=0.05, help='Adagrad learning rate for both models')
+    parser.add_argument('--seeds', default='0,1,2')
+    parser.add_argument('--plot', metavar='PATH', help="also save a figure of the first seed's run")
+    args = parser.parse_args()
+
+    with open(os.path.join(DAY_DIR, 'data', 'input.txt'), encoding='utf-8') as f:
+        text = f.read()
+    chars = sorted(set(text))
+    char_to_idx = {ch: i for i, ch in enumerate(chars)}
+    idx_to_char = {i: ch for ch, i in char_to_idx.items()}
+
+    t0 = time.time()
+    runs, models = [], None
+    for k, seed in enumerate(int(s) for s in args.seeds.split(',')):
+        results, lstm, gru = compare_lstm_gru(text, char_to_idx, hidden_size=args.hidden_size,
+                                              num_iterations=args.iterations, learning_rate=args.lr,
+                                              seed=seed)
+        runs.append(results)
+        if k == 0:
+            models = (lstm, gru)
+    analyze_comparison(runs)
+
+    np.random.seed(1)
+    H = args.hidden_size
+    lstm_text = ''.join(idx_to_char[i] for i in models[0].sample(np.zeros((H, 1)), np.zeros((H, 1)),
+                                                                  char_to_idx['T'], 80, temperature=0.7))
+    np.random.seed(1)
+    gru_text = ''.join(idx_to_char[i] for i in models[1].sample(np.zeros((H, 1)), char_to_idx['T'], 80,
+                                                                 temperature=0.7))
+    print(f"\nSamples from the first seed (temperature 0.7):\n  LSTM | {lstm_text!r}\n  GRU  | {gru_text!r}")
+    if args.plot:
+        visualize_comparison(runs[0], args.plot)
+    print(f"\nTotal time {time.time() - t0:.0f} s.")
+    print("Caveat: a 4k-character corpus and about 1k updates per model compare early learning, not")
+    print("converged models. Chung et al. (2014) found the two comparable; Jozefowicz et al. (2015)")
+    print("found that a forget-gate bias of 1, as in implementation.LSTM, closes most of the LSTM-GRU gap.")

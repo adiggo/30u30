@@ -55,7 +55,9 @@ class PropertyPredictor(nn.Module):
         # GRU update (Section 2)
         self.gru = nn.GRUCell(hidden_dim, hidden_dim)
 
-        # Set2Set readout (Section 4.3)
+        # Set2Set readout (Section 5.3): linear projection of the tuple (h_v^T, x_v),
+        # then the LSTM process block (Vinyals et al. 2016). [PATCH 2026-10-18] projection added.
+        self.s2s_project = nn.Linear(hidden_dim + node_dim, hidden_dim)
         self.set2set_lstm = nn.LSTMCell(2 * hidden_dim, hidden_dim)
 
         # Output MLP
@@ -89,32 +91,31 @@ class PropertyPredictor(nn.Module):
             # GRU update
             h = self.gru(m, h)
 
-        # Phase 2: Set2Set Readout
+        # Phase 2: Set2Set Readout (Section 5.3; Vinyals et al. 2016, Eqs. 3-7)
+        # [PATCH 2026-10-18] Vinyals' order (LSTM step, then attend with the new query) on the
+        # projected tuples (h_v^T, x_v); before: attend with the old state, h_v^T only.
         n_graphs = batch.batch_indices.max().item() + 1
-        device = h.device
+        m = self.s2s_project(torch.cat([h, batch.node_features], dim=-1))  # (total_nodes, d)
 
-        s2s_h = torch.zeros(n_graphs, self.hidden_dim, device=device)
-        s2s_c = torch.zeros(n_graphs, self.hidden_dim, device=device)
-        r = torch.zeros(n_graphs, self.hidden_dim, device=device)
+        q_star = m.new_zeros(n_graphs, 2 * self.hidden_dim)   # q*_0 = 0
+        s2s_h = m.new_zeros(n_graphs, self.hidden_dim)
+        s2s_c = m.new_zeros(n_graphs, self.hidden_dim)
 
         for _ in range(self.set2set_steps):
-            q = s2s_h[batch.batch_indices]
-            e = (h * q).sum(dim=-1)
+            s2s_h, s2s_c = self.set2set_lstm(q_star, (s2s_h, s2s_c))   # q_t = LSTM(q*_{t-1})
+            e = (m * s2s_h[batch.batch_indices]).sum(dim=-1)
 
             # Per-graph softmax
             a = scatter_softmax(e, batch.batch_indices, dim_size=n_graphs)
 
             r = scatter_sum(
-                a.unsqueeze(-1) * h,
+                a.unsqueeze(-1) * m,
                 batch.batch_indices,
                 dim_size=n_graphs
             )
+            q_star = torch.cat([s2s_h, r], dim=-1)                       # q*_t = [q_t ; r_t]
 
-            lstm_input = torch.cat([s2s_h, r], dim=-1)
-            s2s_h, s2s_c = self.set2set_lstm(lstm_input, (s2s_h, s2s_c))
-
-        graph_emb = torch.cat([s2s_h, r], dim=-1)
-        return self.output_mlp(graph_emb)
+        return self.output_mlp(q_star)
 
 
 def train_and_evaluate(n_epochs: int = 20, hidden_dim: int = 32):
@@ -183,6 +184,13 @@ def train_and_evaluate(n_epochs: int = 20, hidden_dim: int = 32):
 
     overall = per_prop_mae.mean().item()
     print(f"  Overall: {overall:.4f}")
+
+    # [PATCH 2026-10-18] context: these synthetic targets are extensive (sums over atoms and bonds),
+    # which set2set's weighted-average read cannot represent by itself
+    train_mean = torch.stack([g.target for g in train_data]).mean(dim=0)
+    baseline = (targets - train_mean).abs().mean().item()
+    print(f"  (predicting the training mean: {baseline:.4f}; the sum readout of implementation.MPNN does "
+          f"far better on these extensive targets, see the README)")
     return model, overall
 
 

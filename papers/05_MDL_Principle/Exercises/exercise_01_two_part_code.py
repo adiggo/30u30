@@ -11,7 +11,7 @@ Where:
 
 Your task: Implement the two-part code for polynomial regression.
 
-Coding Analogy (from the paper's Section 3 framework):
+Coding Analogy (crude two-part MDL, tutorial Secs. 1.3 and 2.4):
 -------------------------------------------------------
 You're sending data to a receiver. You can either:
 1. Send every number individually (naive, expensive)

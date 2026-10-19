@@ -50,7 +50,7 @@ Each solution includes test functions that verify correctness and print results.
 
 **Exercise 4 (Early Stopping):** Reset counter on ANY improvement, even tiny ones.
 
-**Exercise 5 (Full Pipeline):** Validation must use `training=False` for dropout.
+**Exercise 5 (Full Pipeline):** Validation must use `training=False` for dropout. The loop must apply the update (`sgd_update`) and finish by restoring the best-validation weights.
 
 ---
 
@@ -73,7 +73,7 @@ After completing the exercises:
 1. Add dropout between LSTM layers (not just on hidden states)
 2. Try different norm types — batch norm, group norm
 3. Implement dropout variants — DropConnect, spatial dropout
-4. Apply to real data — PTB dataset, text classification
+4. Scale up — run exercise 5's pipeline on more of PTB (`../../train_minimal.py --compare` does 100k words), or on text classification
 
 ---
 

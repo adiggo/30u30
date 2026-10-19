@@ -134,18 +134,19 @@ The benefit: information travels between any two atoms in a single message passi
 
 The paper also tries a "master node" — a virtual node connected to all real atoms — as a simpler alternative.
 
-### Set2Set Readout (Section 4.3)
+### Set2Set Readout (Section 5.3)
 
-Simple sum/mean pooling loses information about the distribution of node states. Set2Set (Vinyals et al. 2015, Day 16) iteratively attends to the node embeddings:
+Simple sum pooling loses information about the distribution of node states. Set2Set (Vinyals et al. 2016, Day 16) iteratively attends to the node vectors. The paper first applies a linear projection to each tuple $(h_v^T, x_v)$, giving $m_v$, then:
 
-1. Initialize query $q_0$ via LSTM
+1. Start from $q^*_0 = 0$
 2. For $M$ processing steps:
-   - Compute attention weights: $a_i = \text{softmax}(q_t^T h_i)$
-   - Weighted sum: $r_t = \sum_i a_i h_i$
-   - LSTM update: $q_{t+1} = \text{LSTM}(q_t, r_t)$
-3. Output: concatenation $[q_M, r_M]$
+   - LSTM step: $q_t = \text{LSTM}(q^*_{t-1})$
+   - Attention weights: $a_v = \text{softmax}_v(m_v^T q_t)$
+   - Weighted sum: $r_t = \sum_v a_v m_v$
+   - $q^*_t = [q_t, r_t]$
+3. Output: $q^*_M$, fed through a neural network
 
-This is permutation-invariant and more expressive than sum pooling.
+This is permutation-invariant. Its read is a weighted *average* (the weights sum to 1), so it captures the distribution of node states but not their total: on its own it cannot represent an extensive target (one that grows with the number of atoms). Sum pooling has the opposite trade-off. (Note added 2026-10-18; see README, "Readout Function".)
 
 ### Multiple Towers (Section 4.4)
 
@@ -201,7 +202,7 @@ The GRU gates control how much of the old state to keep vs. how much to update f
 
 ### Set2Set
 
-Iterative attention over node embeddings. The output is a $2d$-dimensional vector that captures the distribution of node states, not just their sum. The paper uses $M = 6$ processing steps for Set2Set.
+Iterative attention over node embeddings. The output is a $2d$-dimensional vector that captures the distribution of node states (but, being built from weighted averages, not their sum). The number of processing steps $M$ was chosen by random search over 1-12 per target (Section 7).
 
 ---
 

@@ -19,67 +19,72 @@ By letting memories interact *at each step*, the network doesn't just store fact
 
 ## What the Paper Actually Covers
 
-The paper (Santoro et al., 2018) introduces the **Relational Memory Core (RMC)**. It addresses a specific weakness in standard RNNs: **compartmentalized memory**.
+The paper (Santoro et al., 2018) introduces the **Relational Memory Core (RMC)**. It targets a weakness of memory-based networks: LSTMs pack everything into one hidden vector (hard to keep facts apart), while slot memories such as the NTM and DNC keep facts apart but give the stored slots no direct way to interact (Sec. 2).
 
-- **Section 1 (Introduction):** Argues that standard memory cells (like LSTM cells) effectively treat memory as a single dense vector (or unorganized slots). Interactive reasoning is hard because the bits of information don't explicitly "attend" to each other during storage.
-- **Section 2 (Relational Memory Core):** Proposes the RMC. It replaces the standard LSTM cell update with a multi-head self-attention mechanism.
-- **Section 3 (Experiments):** Shows results on:
-    - **N-th Farthest**: A synthetic task explicitly designs to break standard LSTMs.
-    - **Reinforcement Learning**: Mini PacMan (requiring spatial and temporal reasoning).
-    - **Language Modeling**: WikiText-103, where it achieves state-of-the-art (SOTA) results for LSTM-based models.
+- **Section 3 (Model):** 3.1 lets memories interact with multi-head dot-product attention (Eq. 1); 3.2 writes new input with the same attention by appending it as an extra row (Eq. 2); 3.3 adds recurrence by embedding the update in an LSTM-style gated cell (Eqs. 3-9).
+- **Section 4 (Experiments):** Nth Farthest and program evaluation (Learning to Execute) as supervised tasks; BoxWorld and Mini PacMan with a viewport as RL tasks; language modeling on WikiText-103, Project Gutenberg and GigaWord. The appendix gives the exact configurations.
+- **Section 5 (Results):** Nth Farthest 91% for the RMC vs below 30% for LSTM and DNC (5.1); Table 1 for program evaluation; Mini PacMan 677 vs 550 for an LSTM with the viewport (5.3); Table 2 for language modeling (5.4).
+- **Section 6 (Discussion):** fixed-size recurrent memory vs growing buffers of past states, and slots vs heads as two ways to compartmentalize.
 
 ---
 
 ## The Core Idea
 
-The Big Idea is **Self-Attention in the Recurrent Update**.
+The Big Idea is **attention between memories, inside the recurrent update**.
 
-In a standard Transformer, attention happens over time (looking back at all previous words).
-In an RMC, attention happens **over memory slots** at the *current* time step.
+In a Transformer, attention runs over the whole history (all past tokens). In an RMC it runs **among the memory slots, plus the current input, at the current time step** ("we apply attention between memories at a single time step, and not across all previous representations", Sec. 3).
 
-1.  **Fixed Slots**: The memory is a matrix $M$ of size $F \times W$ (F rows/slots, W features).
-2.  **Interaction**: At each step $t$, the slots run a self-attention mechanism ($M_{t-1}$ attends to itself).
-3.  **Update**: The attended memory is then updated using gates (similar to LSTM) to produce $M_t$.
-
-This allows the model to perform "relational reasoning" (connecting concepts) at every single tick of the clock.
+1.  **Fixed slots**: Memory is a matrix $M$ of size $N \times F$ ($N$ rows/slots, $F$ features per slot).
+2.  **Interaction and writing in one step**: The slots attend over $[M; x]$, the memory with the input appended as one extra row; queries come from the slots only, so the result keeps $M$'s shape.
+3.  **Gated update**: The attended memory goes through a row-wise MLP and is gated into $M_t$ like an LSTM cell state.
 
 ---
 
 ## The Math
 
-### 1. Multi-Head Dot Product Attention (MHDPA)
-Standard Transformer attention, but applied to the memory matrix $M$.
+### 1. Multi-Head Dot Product Attention (Sec. 3.1, Eq. 1)
+Standard Transformer attention, applied to the rows of $M$:
 
-$$ A(Q, K, V) = \text{softmax}(\frac{QK^T}{\sqrt{d_k}})V $$
+$$ A_\theta(M) = \text{softmax}\Big(\frac{MW^q (MW^k)^T}{\sqrt{d_k}}\Big) MW^v $$
 
-In the RMC:
-- Input $x_t$ is concatenated to the memory slots (or projected into them).
-- Queries ($Q$), Keys ($K$), and Values ($V$) are computed from the memory $M_{t-1}$.
-- Output is $\tilde{M}_t$, the "attended" memory.
+Each head has its own $W^q, W^k, W^v$; the heads' outputs are concatenated column-wise back to width $F$.
 
-### 2. The Gating Mechanism (LSTM-style)
-The paper uses an LSTM-like update to ensure stability. Instead of scalar gates, we have *row-wise* gates for the memory slots.
+### 2. Writing the input (Sec. 3.2, Eq. 2)
 
-For each memory slot $m$:
-$$ f_t = \sigma(W_f x_t + U_f m_{t-1} + b_f) $$
-$$ i_t = \sigma(W_i x_t + U_i m_{t-1} + b_i) $$
-$$ \tilde{m}_t = \text{tanh}(W_c x_t + U_c m_{t-1} + b_c) $$
-$$ m_t = f_t \odot m_{t-1} + i_t \odot \tilde{m}_t $$
+$$ \tilde{M} = \text{softmax}\Big(\frac{MW^q ([M; x]W^k)^T}{\sqrt{d_k}}\Big) [M; x]W^v $$
 
-*(Note: The actual implementation in the paper often uses the attention output as the input to these gates, effectively replacing the linear $x_t$ terms or augmenting them.)*
+$[M; x]$ is the **row-wise** concatenation, $(N+1) \times F$. Queries come from $M$ only, so the score matrix is $N \times (N+1)$ and $\tilde{M}$ is $N \times F$; the extra column says how much each slot reads the input.
+
+### 3. The gated update (Sec. 3.3, Eqs. 3-9)
+Each row $m_i$ is treated like an LSTM cell state, with $h_{i,t}$ its output:
+
+$$ f_{i,t} = W^f x_t + U^f h_{i,t-1} + b^f, \qquad i_{i,t} = W^i x_t + U^i h_{i,t-1} + b^i $$
+$$ m_{i,t} = \sigma(f_{i,t} + \tilde{b}^f) \circ m_{i,t-1} + \sigma(i_{i,t}) \circ g_\psi(\tilde{m}_{i,t}) $$
+$$ h_{i,t} = \sigma(o_{i,t}) \circ \tanh(m_{i,t}) $$
+
+The change from an LSTM is the candidate: $g_\psi(\tilde{m}_{i,t})$, the attended row passed through a row-wise MLP, instead of a fresh $\tanh(Wx + Uh)$. "In practice we did not find output gates necessary"; without one, $h_{i,t-1} = \tanh(m_{i,t-1})$. The paper points to its Sonnet code for "the exact formulation", which `implementation.py` follows:
+
+- $\tilde{x} = W_{in} x_t$ is the input projected to one memory-sized row; it is the row appended in Eq. 2.
+- $g_\psi$: residual + LayerNorm after the attention, then a 2-layer MLP with residual + LayerNorm ("a row/memory-wise MLP with layer normalisation", Sec. 3.3). Sonnet also LayerNorms the q, k, v projections.
+- Gates: $[i; f] = W\tilde{x} + U \tanh(M_{t-1})$, input bias 0, forget bias $+1$.
+- $M_t = \sigma(i) \circ \tanh(G) + \sigma(f) \circ M_{t-1}$, with $G$ the MLP block's output (Sonnet adds the $\tanh$).
+- 'unit' gating gives one gate per unit; 'memory' gating gives one scalar per row (Sec. 3.3).
+- The initial memory is the identity matrix padded to $N \times F$, and the core's output is the flattened memory.
 
 ---
 
 ## The Experiments
 
-### N-th Farthest (Section 3.1)
-- **Setup**: A sequence of vectors is shown. The model must identify which vector is farthest from the $N$-th vector in the sequence.
-- **Why it matters**: To solve this, you *must* remember the N-th vector, hold it, and compare it to every other vector. Standard LSTMs fail because they degrade the "held" vector over time.
-- **Result**: RMC solves this with near 100% accuracy, while LSTMs collapse as the sequence length grows.
+### Nth Farthest (Sec. 4.1, App. A.1, results Sec. 5.1)
+- **Setup**: 8 vectors of 16 dims, $x \sim U(-1, 1)$, each with a randomly assigned label 1-8 (one-hot, so labels do not match time steps). Every step also carries $n$ and $m$ as one-hots: a 40-dim input $(x_t; l_t; n; m)$. The question is "what is the $n$-th farthest vector from vector $m$?" and the answer is a label, trained with softmax cross-entropy; $n$ and $m$ are sampled per sequence. All models feed their output through the same 4-layer MLP (256 units). Adam, batch 1600, learning rate $10^{-4}$.
+- **Why it matters**: vector $m$ may arrive at any step, even last, so the model has to keep every vector and later rank all distances to $m$: it sorts *distance relations*, not the vectors themselves.
+- **Result**: the RMC "consistently" reached 91%, while LSTM and DNC never passed 30% best batch accuracy. With 32-dim vectors the RMC got similar accuracy but less robustly. There is no sequence-length sweep.
+- **A free 25%**: in Sonnet's dataset code (the implementation the paper links to) vector $m$ itself is one of the 8 ranks, so when the question asks for the 8th farthest vector the answer is $m$, which is in the input. Copying $m$ for those questions and guessing among the other 7 labels otherwise gives $1/8 + 7/8 \cdot 1/7 = 2/8 = 25\%$, so "below 30%" means the baselines learned almost nothing beyond that.
+- **This repo**: `train_minimal.py` runs the same task with 3 vectors of 2 dims. Under the paper's protocol both the RMC and a parameter-matched LSTM stop at the free $2/K$ (67.7%) in a CPU budget. With a short curriculum that first asks only for the farthest vector (not in the paper), the RMC reaches about 95% on every $n$ while the LSTM stays at 67.5%; see the README.
 
-### WikiText-103 (Section 3.3)
-- **Setup**: Word-level language modeling on a large dataset.
-- **Result**: RMC achieves perplexity comparable to or better than large LSTMs with fewer parameters, showing that structured memory is efficient.
+### Language modeling (Sec. 4.3, results Sec. 5.4, Table 2)
+- **Setup**: word-level language modeling on WikiText-103, Project Gutenberg and GigaWord v5. The RMC used a single, large memory slot here.
+- **Result**: test perplexity 31.6 on WikiText-103, against 34.3 for a tuned LSTM and 33 for the QRNN; 42.0 on Gutenberg and 38.3 on GigaWord. The paper makes no fewer-parameters claim.
 
 ---
 

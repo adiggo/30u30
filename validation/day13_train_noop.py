@@ -1,14 +1,17 @@
-"""Day 13 -- does train_minimal.py's training loop ever change a parameter?
+"""Day 13 -- does train_minimal.py's training loop change the parameters (and lower the loss)?
 
-train_epoch() computes forward + loss + accuracy only; the SGD class is never
-instantiated and `lr` is never used, so every weight is bit-identical after an
-"epoch" and the loss stays at chance level (~ln(#token values)).
-This script imports the training functions (does not run the script's main) on a
-tiny model/data so it costs < 1 s.
+History: until 2026-10-18 train_epoch() computed forward + loss + accuracy only (there was no
+backward pass, the SGD class was never used and `lr` was ignored), so every weight stayed
+bit-identical and the loss stayed at chance level: this script reported FAIL (max change 0.0).
+Since the open-item fix, implementation.py has a backward pass and train_epoch() takes an Adam
+optimizer (Sec. 5.3 schedule), so the expected result is PASS.
+
+The parameter list below walks the model's attributes directly (not model.parameters()), so it
+also checks that the optimizer updates, in place, the very arrays the layers compute with.
+Imports the training functions (does not run the script's main) on a tiny model/data: ~2 s.
 
 Run: OMP_NUM_THREADS=1 python validation/day13_train_noop.py
 """
-import copy
 import contextlib
 import io
 import math
@@ -31,21 +34,32 @@ def all_params(model):
             ps += [att.W_Q, att.W_K, att.W_V, att.W_O]
         ff = blk.feed_forward
         ps += [ff.W1, ff.b1, ff.W2, ff.b2]
+        for nm in ("norm1", "norm2", "norm3"):
+            if hasattr(blk, nm):
+                ps += [getattr(blk, nm).gamma, getattr(blk, nm).beta]
     return ps
 
 
 np.random.seed(0)
 src, tgt = tm.generate_copy_task_data(64, 6, vocab_size=12)
 model = tm.SimpleTransformer(vocab_size=12, d_model=16, n_heads=2, n_layers=1, d_ff=32, dropout_p=0.1)
-before = copy.deepcopy(all_params(model))
+optimizer = tm.Adam(model.parameters(), d_model=16, warmup=20)
+before = [p.copy() for p in all_params(model)]
 loss0 = tm.evaluate(model, src, tgt, batch_size=32)["loss"]
+epochs = 30
 with contextlib.redirect_stdout(io.StringIO()):
-    for _ in range(3):
-        tm.train_epoch(model, src, tgt, batch_size=32, lr=0.1)
+    for _ in range(epochs):
+        tm.train_epoch(model, src, tgt, optimizer, batch_size=32)
 after = all_params(model)
 loss1 = tm.evaluate(model, src, tgt, batch_size=32)["loss"]
-max_change = max(float(np.abs(a - b).max()) for a, b in zip(after, before))
-print(f"parameters checked: {len(before)} arrays, {sum(p.size for p in before)} values")
-print(f"max |param change| after 3 'training' epochs at lr=0.1: {max_change}")
-print(f"eval loss before = {loss0:.4f}, after = {loss1:.4f}; ln(9 token values) = {math.log(9):.4f}, ln(12) = {math.log(12):.4f}")
-print("RESULT:", "FAIL - training loop is a no-op" if max_change == 0.0 else "parameters do change")
+changes = [float(np.abs(a - b).max()) for a, b in zip(after, before)]
+print(f"parameters checked: {len(before)} arrays, {sum(p.size for p in before)} values "
+      f"(model.parameters() lists {len(model.parameters())} arrays)")
+print(f"after {epochs} epochs ({optimizer.t} Adam steps): max |param change| = {max(changes):.3e}, "
+      f"arrays that did not change: {sum(c == 0.0 for c in changes)}")
+print(f"eval loss before = {loss0:.4f}, after = {loss1:.4f}; ln(9 token values) = {math.log(9):.4f}, "
+      f"ln(12) = {math.log(12):.4f}")
+# loss must fall by >= 10% within 60 Adam steps (it falls ~20% here; a no-op loop changes nothing)
+ok = min(changes) > 0.0 and loss1 < 0.9 * loss0 and len(model.parameters()) == len(before)
+print("RESULT:", "PASS - every parameter array changes and the loss falls" if ok
+      else "FAIL - training loop does not update every parameter or does not lower the loss")

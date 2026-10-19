@@ -14,6 +14,21 @@ Components implemented:
 5. Encoder Block
 6. Decoder Block
 7. Full Transformer
+
+[PATCH 2026-10-18] Backward passes. Every component above now also has a
+hand-written backward pass, so the model trains in pure NumPy (train_minimal.py):
+  - forward() keeps what backward() will need in `self.cache` (inputs, softmax
+    probabilities, dropout masks, LayerNorm statistics, ...);
+  - backward(grad_output) takes dL/d(output) and returns dL/d(input) -- the
+    chain rule applied one module at a time, in reverse order of the forward;
+  - parameter gradients go to `self.grads`, a dict keyed like the parameter
+    attributes (grads["W_Q"] has the shape of W_Q). backward() overwrites them:
+    each module runs once per forward pass, so there is nothing to accumulate
+    (PyTorch accumulates into .grad instead, hence its optimizer.zero_grad());
+  - Transformer.named_params_and_grads() / parameters() / gradients() list every
+    trainable array once, for the optimizer.
+The gradients match torch.autograd (float64, every parameter) and central finite
+differences: validation/day13_backprop_check.py.
 """
 
 import numpy as np
@@ -61,6 +76,50 @@ def layer_norm(x: np.ndarray, gamma: np.ndarray, beta: np.ndarray,
     var = np.var(x, axis=-1, keepdims=True)
     x_norm = (x - mean) / np.sqrt(var + eps)
     return gamma * x_norm + beta
+
+
+# [PATCH 2026-10-18] Helpers for the backward passes. Dropout used to be written
+# inline in every forward(); as a function pair the forward returns its random
+# mask and the backward reuses exactly that mask. (Same random numbers, drawn in
+# the same order as the old inline code, so forward outputs are unchanged.)
+def dropout_forward(x: np.ndarray, p: float, training: bool):
+    """
+    Inverted dropout (Sec. 5.4: P_drop = 0.1 on sub-layer outputs and embeddings).
+
+    "Inverted" = the kept units are scaled by 1/(1-p) during training, so the
+    expected activation is unchanged and evaluation needs no rescaling.
+
+    Returns:
+        (output, mask): mask is a bool array shaped like x (True = kept), or
+        None when dropout is inactive (eval mode or p = 0).
+    """
+    if not training or p <= 0:
+        return x, None
+    mask = np.random.rand(*x.shape) > p     # uniform [0,1) draws > p -> True with probability 1-p
+    return x * mask / (1 - p), mask         # bool * float -> float: dropped entries become 0.0
+
+
+def dropout_backward(grad_output: np.ndarray, mask: Optional[np.ndarray], p: float) -> np.ndarray:
+    """y = x * mask / (1-p) is linear in x, so dL/dx = dL/dy * mask / (1-p), with the SAME mask."""
+    if mask is None:
+        return grad_output
+    return grad_output * mask / (1 - p)
+
+
+def softmax_backward(probs: np.ndarray, grad_probs: np.ndarray, axis: int = -1) -> np.ndarray:
+    """
+    Backward pass of p = softmax(s) along `axis`: returns dL/ds given p and dL/dp.
+
+    The softmax Jacobian is dp_i/ds_j = p_i * (delta_ij - p_j), so
+        dL/ds_j = sum_i g_i * p_i * (delta_ij - p_j) = p_j * (g_j - sum_i g_i * p_i)
+    where g = dL/dp. The sum is the probability-weighted average of the incoming
+    gradient (one number per row): a logit's gradient is its probability times how
+    much better its own g is than that average. This costs O(n) per row instead of
+    building the n x n Jacobian.
+    """
+    # (g * p).sum(axis, keepdims=True): one number per row; keepdims=True keeps the
+    # summed axis with length 1, so the subtraction broadcasts it back over the row
+    return probs * (grad_probs - np.sum(grad_probs * probs, axis=axis, keepdims=True))
 
 
 # =============================================================================
@@ -127,11 +186,32 @@ class PositionalEncoding:
         output = x + self.pe[:seq_len]
         
         # Apply dropout during training
-        if self.training and self.dropout_p > 0:
-            mask = (np.random.rand(*output.shape) > self.dropout_p).astype(np.float32)
-            output = output * mask / (1 - self.dropout_p)
+        # [PATCH 2026-10-18] via dropout_forward, keeping the mask for backward().
+        # The cache is a 1-tuple so that it is never None (see backward's `cache`).
+        output, mask = dropout_forward(output, self.dropout_p, self.training)
+        self.cache = (mask,)
         
         return output
+
+    # [PATCH 2026-10-18] backward pass (the encoding is a fixed table: no parameters)
+    def backward(self, grad_output: np.ndarray, cache: Optional[tuple] = None) -> np.ndarray:
+        """
+        Backward of output = dropout(x + PE[:seq_len]).
+
+        PE is a constant, so the addition passes the gradient through unchanged;
+        only the dropout mask acts on it.
+
+        Args:
+            grad_output: dL/d(output), (batch, seq_len, d_model)
+            cache: the `self.cache` saved right after a particular forward() call
+                (default: the most recent call). The Transformer runs this module
+                twice per forward pass (source, then target), so it keeps both
+                caches and passes each one back explicitly.
+        Returns:
+            dL/dx, (batch, seq_len, d_model)
+        """
+        (mask,) = self.cache if cache is None else cache
+        return dropout_backward(grad_output, mask, self.dropout_p)
     
     def train(self):
         self.training = True
@@ -198,16 +278,61 @@ class ScaledDotProductAttention:
         self.attention_weights = attention_weights
         
         # Step 5: Apply dropout to attention weights
-        if self.training and self.dropout_p > 0:
-            dropout_mask = (np.random.rand(*attention_weights.shape) > self.dropout_p)
-            attention_weights = attention_weights * dropout_mask / (1 - self.dropout_p)
+        # [PATCH 2026-10-18] via dropout_forward; keep everything backward() needs
+        dropped_weights, dropout_mask = dropout_forward(attention_weights, self.dropout_p, self.training)
+        self.cache = (Q, K, V, mask, attention_weights, dropped_weights, dropout_mask)
         
         # Step 6: Multiply by values
         # (batch, heads, seq_q, seq_k) @ (batch, heads, seq_k, d_v)
         # -> (batch, heads, seq_q, d_v)
-        output = np.matmul(attention_weights, V)
+        output = np.matmul(dropped_weights, V)
         
         return output
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Backward of output = dropout(softmax(mask(Q K^T / sqrt(d_k)))) V, in reverse order
+        of forward()'s steps.
+
+        Args:
+            grad_output: dL/d(output), (batch, heads, seq_q, d_v)
+        Returns:
+            (dQ, dK, dV), shaped like Q, K, V
+        """
+        Q, K, V, mask, P, P_dropped, dropout_mask = self.cache
+        d_k = K.shape[-1]
+        swap = (0, 1, 3, 2)   # transpose(swap) swaps the last two axes (a batched matrix transpose)
+
+        # Step 6: output = P_dropped @ V
+        # dV = P_dropped^T @ dout: (B,h,Lk,Lq) @ (B,h,Lq,d_v) -> (B,h,Lk,d_v);
+        # value j collects gradient from every query i in proportion to the weight P_ij
+        dV = np.matmul(P_dropped.transpose(swap), grad_output)
+        # dP_dropped = dout @ V^T: (B,h,Lq,d_v) @ (B,h,d_v,Lk) -> (B,h,Lq,Lk)
+        dP_dropped = np.matmul(grad_output, V.transpose(swap))
+
+        # Step 5: dropout on the weights -> reuse the forward mask
+        dP = dropout_backward(dP_dropped, dropout_mask, self.dropout_p)
+
+        # Step 4: softmax over keys (last axis), row by row; see softmax_backward
+        d_scores = softmax_backward(P, dP, axis=-1)
+
+        # Step 3: masked scores were REPLACED by the constant -1e9, so no gradient
+        # reaches the original scores there. (Their probabilities are exactly 0, so
+        # d_scores is already 0 there; np.where makes the rule explicit.) The mask
+        # (B,1,1,Lk) or (1,1,Lq,Lk) broadcasts over heads/queries like in forward().
+        if mask is not None:
+            d_scores = np.where(mask, 0.0, d_scores)
+
+        # Step 2: scores = raw / sqrt(d_k) -> the gradient is divided by the same constant
+        d_raw = d_scores / np.sqrt(d_k)
+
+        # Step 1: raw = Q @ K^T
+        # dQ = d_raw @ K: (B,h,Lq,Lk) @ (B,h,Lk,d_k) -> (B,h,Lq,d_k)
+        dQ = np.matmul(d_raw, K)
+        # dK = d_raw^T @ Q: (B,h,Lk,Lq) @ (B,h,Lq,d_k) -> (B,h,Lk,d_k)
+        dK = np.matmul(d_raw.transpose(swap), Q)
+        return dQ, dK, dV
     
     def train(self):
         self.training = True
@@ -255,6 +380,8 @@ class MultiHeadAttention:
         self.W_K = np.random.randn(d_model, d_model) * scale
         self.W_V = np.random.randn(d_model, d_model) * scale
         self.W_O = np.random.randn(d_model, d_model) * scale
+        # [PATCH 2026-10-18] parameter gradients, filled by backward()
+        self.grads = {}
         
         # Attention mechanism
         self.attention = ScaledDotProductAttention(dropout_p)
@@ -299,8 +426,59 @@ class MultiHeadAttention:
         
         # Step 5: Final linear projection
         output = attn_output @ self.W_O
+        # [PATCH 2026-10-18] inputs and concatenated heads, for backward()
+        self.cache = (query, key, value, attn_output)
         
         return output
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Backward of MultiHead(query, key, value) = Concat(head_1..head_h) W_O (Sec. 3.2.2).
+
+        Args:
+            grad_output: dL/d(output), (batch, seq_q, d_model)
+        Returns:
+            (d_query, d_key, d_value), shaped like the three inputs. In self-attention
+            the caller passed the same x three times, so it must ADD all three; in
+            cross-attention d_key + d_value flow to the encoder output.
+        Fills self.grads["W_Q"], ["W_K"], ["W_V"], ["W_O"] (each (d_model, d_model)).
+        """
+        query, key, value, concat = self.cache
+        B, Lq, D = query.shape
+        Lk = key.shape[1]
+        h, d_k = self.n_heads, self.d_k
+
+        # Step 5: output = concat @ W_O. A weight is shared by every (batch, position)
+        # row, so its gradient sums over all of them: flatten (B, Lq, D) -> (B*Lq, D) and
+        # one 2-D matmul does the sum: (D, B*Lq) @ (B*Lq, D) -> (D, D)
+        self.grads["W_O"] = concat.reshape(-1, D).T @ grad_output.reshape(-1, D)
+        d_concat = grad_output @ self.W_O.T            # (B, Lq, D) @ (D, D) -> (B, Lq, D)
+
+        # Step 4 undone: "concatenate heads" was transpose(0,2,1,3) then reshape, so
+        # reshape back to (B, Lq, h, d_k), then transpose to (B, h, Lq, d_k)
+        d_heads = d_concat.reshape(B, Lq, h, d_k).transpose(0, 2, 1, 3)
+
+        # Step 3: attention, all heads at once
+        dQh, dKh, dVh = self.attention.backward(d_heads)   # each (B, h, L, d_k)
+
+        # Step 2 undone: "split heads" was reshape then transpose(0,2,1,3); that transpose
+        # is its own inverse, so transpose back to (B, L, h, d_k) and merge (h, d_k) -> D
+        dQ = dQh.transpose(0, 2, 1, 3).reshape(B, Lq, D)
+        dK = dKh.transpose(0, 2, 1, 3).reshape(B, Lk, D)
+        dV = dVh.transpose(0, 2, 1, 3).reshape(B, Lk, D)
+
+        # Step 1: Q = query @ W_Q (likewise K, V): weight gradient = input^T @ output-gradient,
+        # summed over batch and positions; input gradient = output-gradient @ W^T
+        self.grads["W_Q"] = query.reshape(-1, D).T @ dQ.reshape(-1, D)
+        self.grads["W_K"] = key.reshape(-1, D).T @ dK.reshape(-1, D)
+        self.grads["W_V"] = value.reshape(-1, D).T @ dV.reshape(-1, D)
+        return dQ @ self.W_Q.T, dK @ self.W_K.T, dV @ self.W_V.T
+
+    # [PATCH 2026-10-18] parameter listing for the optimizer
+    def named_params_and_grads(self, prefix: str = "") -> List[tuple]:
+        """[(name, parameter, gradient or None before backward)] for W_Q, W_K, W_V, W_O."""
+        return [(prefix + n, getattr(self, n), self.grads.get(n)) for n in ("W_Q", "W_K", "W_V", "W_O")]
     
     def get_attention_weights(self) -> np.ndarray:
         """Get the last computed attention weights."""
@@ -349,6 +527,8 @@ class FeedForward:
         self.b1 = np.zeros(d_ff)
         self.W2 = np.random.randn(d_ff, d_model) * scale2
         self.b2 = np.zeros(d_model)
+        # [PATCH 2026-10-18] parameter gradients, filled by backward()
+        self.grads = {}
     
     def forward(self, x: np.ndarray) -> np.ndarray:
         """
@@ -361,17 +541,51 @@ class FeedForward:
             Output of shape (..., d_model)
         """
         # First linear + ReLU
-        hidden = relu(x @ self.W1 + self.b1)
+        # [PATCH 2026-10-18] keep the pre-activation z1: ReLU's backward needs its sign
+        z1 = x @ self.W1 + self.b1
+        hidden = relu(z1)
         
         # Dropout
-        if self.training and self.dropout_p > 0:
-            mask = (np.random.rand(*hidden.shape) > self.dropout_p).astype(np.float32)
-            hidden = hidden * mask / (1 - self.dropout_p)
+        hidden, mask = dropout_forward(hidden, self.dropout_p, self.training)
         
         # Second linear
         output = hidden @ self.W2 + self.b2
+        self.cache = (x, z1, hidden, mask)
         
         return output
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> np.ndarray:
+        """
+        Backward of FFN(x) = dropout(ReLU(x W1 + b1)) W2 + b2 (Eq. 2).
+
+        Args:
+            grad_output: dL/d(output), (..., d_model)
+        Returns:
+            dL/dx, (..., d_model). Fills self.grads["W1"], ["b1"], ["W2"], ["b2"].
+        """
+        x, z1, hidden, mask = self.cache
+        D, F = self.d_model, self.d_ff
+        g = grad_output.reshape(-1, D)          # (..., D) -> (N, D): every position is one row
+
+        # output = hidden @ W2 + b2 (the same W2, b2 at every position -> sum over rows)
+        self.grads["W2"] = hidden.reshape(-1, F).T @ g     # (F, N) @ (N, D) -> (F, D)
+        self.grads["b2"] = g.sum(axis=0)                   # (N, D) -> (D,)
+        d_hidden = grad_output @ self.W2.T                 # (..., D) @ (D, F) -> (..., F)
+
+        # dropout (same mask), then ReLU: gradient passes only where z1 > 0
+        d_hidden = dropout_backward(d_hidden, mask, self.dropout_p)
+        d_z1 = d_hidden * (z1 > 0)                         # bool mask * float -> float
+
+        # z1 = x @ W1 + b1
+        self.grads["W1"] = x.reshape(-1, D).T @ d_z1.reshape(-1, F)   # (D, N) @ (N, F) -> (D, F)
+        self.grads["b1"] = d_z1.reshape(-1, F).sum(axis=0)            # (F,)
+        return d_z1 @ self.W1.T                                       # (..., F) @ (F, D) -> (..., D)
+
+    # [PATCH 2026-10-18] parameter listing for the optimizer
+    def named_params_and_grads(self, prefix: str = "") -> List[tuple]:
+        """[(name, parameter, gradient or None before backward)] for W1, b1, W2, b2."""
+        return [(prefix + n, getattr(self, n), self.grads.get(n)) for n in ("W1", "b1", "W2", "b2")]
     
     def train(self):
         self.training = True
@@ -394,10 +608,50 @@ class LayerNorm:
         # Learnable parameters
         self.gamma = np.ones(d_model)
         self.beta = np.zeros(d_model)
+        # [PATCH 2026-10-18] parameter gradients, filled by backward()
+        self.grads = {}
     
     def forward(self, x: np.ndarray) -> np.ndarray:
         """Apply layer normalization."""
-        return layer_norm(x, self.gamma, self.beta, self.eps)
+        # [PATCH 2026-10-18] Same arithmetic as layer_norm() above, written out so the
+        # normalised input and the per-token std can be kept for backward().
+        mean = np.mean(x, axis=-1, keepdims=True)      # (..., 1): one mean per token
+        var = np.var(x, axis=-1, keepdims=True)        # (..., 1): biased variance, like the paper/PyTorch
+        std = np.sqrt(var + self.eps)
+        x_hat = (x - mean) / std
+        self.cache = (x_hat, std)
+        return self.gamma * x_hat + self.beta
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> np.ndarray:
+        """
+        Backward of y = gamma * x_hat + beta, x_hat = (x - mean(x)) / sqrt(var(x) + eps),
+        statistics over the last (feature) axis of each token.
+
+        With g = dL/dx_hat = dL/dy * gamma, the result is
+            dL/dx = (g - mean(g) - x_hat * mean(g * x_hat)) / std
+        Intuition: LayerNorm's output does not move if you shift x by a constant
+        and (up to eps) if you rescale x, so dL/dx has no component along those two
+        directions: subtracting mean(g) removes the "shift" part (all-ones direction),
+        subtracting x_hat * mean(g * x_hat) removes the "rescale" part (x_hat direction).
+
+        Returns dL/dx; fills self.grads["gamma"], ["beta"] (each (d_model,)).
+        """
+        x_hat, std = self.cache
+        D = self.d_model
+        # gamma and beta are shared by every token: sum over all leading axes
+        # (reshape(-1, D) flattens (batch, seq) into one axis of rows)
+        self.grads["gamma"] = (grad_output * x_hat).reshape(-1, D).sum(axis=0)
+        self.grads["beta"] = grad_output.reshape(-1, D).sum(axis=0)
+        g = grad_output * self.gamma                   # (..., D) * (D,) broadcasts over tokens
+        # mean(..., axis=-1, keepdims=True): one number per token, kept as (..., 1) to broadcast
+        return (g - g.mean(axis=-1, keepdims=True)
+                - x_hat * (g * x_hat).mean(axis=-1, keepdims=True)) / std
+
+    # [PATCH 2026-10-18] parameter listing for the optimizer
+    def named_params_and_grads(self, prefix: str = "") -> List[tuple]:
+        """[(name, parameter, gradient or None before backward)] for gamma, beta."""
+        return [(prefix + n, getattr(self, n), self.grads.get(n)) for n in ("gamma", "beta")]
 
 
 # =============================================================================
@@ -448,9 +702,8 @@ class EncoderBlock:
         attn_output = self.self_attention.forward(x, x, x, mask)
         
         # Dropout on attention output
-        if self.training and self.dropout_p > 0:
-            dropout_mask = (np.random.rand(*attn_output.shape) > self.dropout_p)
-            attn_output = attn_output * dropout_mask / (1 - self.dropout_p)
+        # [PATCH 2026-10-18] via dropout_forward; both residual-branch masks are kept for backward()
+        attn_output, drop_attn = dropout_forward(attn_output, self.dropout_p, self.training)
         
         x = self.norm1.forward(x + attn_output)  # Add & Norm
         
@@ -458,13 +711,48 @@ class EncoderBlock:
         ff_output = self.feed_forward.forward(x)
         
         # Dropout on FFN output
-        if self.training and self.dropout_p > 0:
-            dropout_mask = (np.random.rand(*ff_output.shape) > self.dropout_p)
-            ff_output = ff_output * dropout_mask / (1 - self.dropout_p)
+        ff_output, drop_ff = dropout_forward(ff_output, self.dropout_p, self.training)
         
         x = self.norm2.forward(x + ff_output)  # Add & Norm
+        self.cache = (drop_attn, drop_ff)
         
         return x
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> np.ndarray:
+        """
+        Backward through the post-norm block (Sec. 3.1):
+            x1 = LayerNorm(x  + Dropout(SelfAttn(x, x, x)))
+            y  = LayerNorm(x1 + Dropout(FFN(x1)))
+
+        A residual add z = a + b copies dL/dz to BOTH a and b unchanged, so each
+        sub-layer's input gradient is "skip path + branch path".
+
+        Args:
+            grad_output: dL/dy, (batch, seq_len, d_model)
+        Returns:
+            dL/dx, (batch, seq_len, d_model)
+        """
+        drop_attn, drop_ff = self.cache
+        p = self.dropout_p
+
+        # y = norm2(x1 + dropout(ffn(x1)))
+        d_sum2 = self.norm2.backward(grad_output)
+        d_x1 = d_sum2 + self.feed_forward.backward(dropout_backward(d_sum2, drop_ff, p))
+
+        # x1 = norm1(x + dropout(attn(x, x, x)))
+        d_sum1 = self.norm1.backward(d_x1)
+        d_q, d_k, d_v = self.self_attention.backward(dropout_backward(d_sum1, drop_attn, p))
+        # x was used four times: skip path, and as query, key and value
+        return d_sum1 + d_q + d_k + d_v
+
+    # [PATCH 2026-10-18] parameter listing for the optimizer
+    def named_params_and_grads(self, prefix: str = "") -> List[tuple]:
+        """(name, parameter, gradient) for every parameter in this block."""
+        return (self.self_attention.named_params_and_grads(prefix + "self_attention.")
+                + self.feed_forward.named_params_and_grads(prefix + "feed_forward.")
+                + self.norm1.named_params_and_grads(prefix + "norm1.")
+                + self.norm2.named_params_and_grads(prefix + "norm2."))
     
     def train(self):
         self.training = True
@@ -526,28 +814,68 @@ class DecoderBlock:
         Returns:
             Output of shape (batch, seq_tgt, d_model)
         """
+        # [PATCH 2026-10-18] dropout via dropout_forward; the three masks are kept for backward()
         # Masked self-attention
         self_attn = self.self_attention.forward(x, x, x, self_mask)
-        if self.training and self.dropout_p > 0:
-            mask = (np.random.rand(*self_attn.shape) > self.dropout_p)
-            self_attn = self_attn * mask / (1 - self.dropout_p)
+        self_attn, drop_self = dropout_forward(self_attn, self.dropout_p, self.training)
         x = self.norm1.forward(x + self_attn)
         
         # Cross-attention (attend to encoder output)
         cross_attn = self.cross_attention.forward(x, encoder_output, encoder_output, cross_mask)
-        if self.training and self.dropout_p > 0:
-            mask = (np.random.rand(*cross_attn.shape) > self.dropout_p)
-            cross_attn = cross_attn * mask / (1 - self.dropout_p)
+        cross_attn, drop_cross = dropout_forward(cross_attn, self.dropout_p, self.training)
         x = self.norm2.forward(x + cross_attn)
         
         # Feed-forward
         ff_output = self.feed_forward.forward(x)
-        if self.training and self.dropout_p > 0:
-            mask = (np.random.rand(*ff_output.shape) > self.dropout_p)
-            ff_output = ff_output * mask / (1 - self.dropout_p)
+        ff_output, drop_ff = dropout_forward(ff_output, self.dropout_p, self.training)
         x = self.norm3.forward(x + ff_output)
+        self.cache = (drop_self, drop_cross, drop_ff)
         
         return x
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Backward through the post-norm decoder block (Sec. 3.1, 3.2.3):
+            x1 = LayerNorm(x  + Dropout(SelfAttn(x, x, x, causal mask)))
+            x2 = LayerNorm(x1 + Dropout(CrossAttn(x1, enc, enc)))   # Q from decoder, K/V from encoder
+            y  = LayerNorm(x2 + Dropout(FFN(x2)))
+
+        Args:
+            grad_output: dL/dy, (batch, seq_tgt, d_model)
+        Returns:
+            (dL/dx, dL/d encoder_output): (batch, seq_tgt, d_model) and
+            (batch, seq_src, d_model). The second one is only THIS layer's share:
+            every decoder layer reads the same encoder output, so the caller sums it
+            over all decoder layers.
+        """
+        drop_self, drop_cross, drop_ff = self.cache
+        p = self.dropout_p
+
+        # y = norm3(x2 + dropout(ffn(x2)))
+        d_sum3 = self.norm3.backward(grad_output)
+        d_x2 = d_sum3 + self.feed_forward.backward(dropout_backward(d_sum3, drop_ff, p))
+
+        # x2 = norm2(x1 + dropout(cross_attn(x1, enc, enc)))
+        d_sum2 = self.norm2.backward(d_x2)
+        d_q, d_k, d_v = self.cross_attention.backward(dropout_backward(d_sum2, drop_cross, p))
+        d_x1 = d_sum2 + d_q              # the decoder state was only the query
+        d_encoder_output = d_k + d_v     # the encoder output was both key and value
+
+        # x1 = norm1(x + dropout(self_attn(x, x, x)))
+        d_sum1 = self.norm1.backward(d_x1)
+        d_q, d_k, d_v = self.self_attention.backward(dropout_backward(d_sum1, drop_self, p))
+        return d_sum1 + d_q + d_k + d_v, d_encoder_output
+
+    # [PATCH 2026-10-18] parameter listing for the optimizer
+    def named_params_and_grads(self, prefix: str = "") -> List[tuple]:
+        """(name, parameter, gradient) for every parameter in this block."""
+        return (self.self_attention.named_params_and_grads(prefix + "self_attention.")
+                + self.cross_attention.named_params_and_grads(prefix + "cross_attention.")
+                + self.feed_forward.named_params_and_grads(prefix + "feed_forward.")
+                + self.norm1.named_params_and_grads(prefix + "norm1.")
+                + self.norm2.named_params_and_grads(prefix + "norm2.")
+                + self.norm3.named_params_and_grads(prefix + "norm3."))
     
     def train(self):
         self.training = True
@@ -580,6 +908,8 @@ class TokenEmbedding:
         
         # Initialize embeddings
         self.embedding = np.random.randn(vocab_size, d_model) * 0.02
+        # [PATCH 2026-10-18] parameter gradients, filled by backward()
+        self.grads = {}
     
     def forward(self, x: np.ndarray) -> np.ndarray:
         """
@@ -591,7 +921,34 @@ class TokenEmbedding:
         Returns:
             Embeddings (batch, seq_len, d_model)
         """
+        self.cache = x  # [PATCH 2026-10-18] token ids, for backward()
         return self.embedding[x]
+
+    # [PATCH 2026-10-18] backward pass
+    def backward(self, grad_output: np.ndarray) -> None:
+        """
+        A lookup copies row tokens[b, t] of the table to output[b, t], so the
+        table's gradient is a scatter-add: row v receives the sum of grad_output
+        over every position whose token is v (rows of unused tokens stay 0).
+
+        Args:
+            grad_output: dL/d(output), (batch, seq_len, d_model)
+        Fills self.grads["embedding"], (vocab_size, d_model). Token ids are
+        integers, so there is no gradient w.r.t. the input to return.
+        """
+        tokens = self.cache
+        d_table = np.zeros_like(self.embedding)
+        # np.add.at(d_table, tokens, grad_output): d_table[tokens[b, t]] += grad_output[b, t]
+        # for every (b, t). It is "unbuffered": a token id that appears several times gets
+        # ALL its updates. The look-alike `d_table[tokens] += grad_output` would keep only
+        # one of them per repeated id, silently losing gradient.
+        np.add.at(d_table, tokens, grad_output)
+        self.grads["embedding"] = d_table
+
+    # [PATCH 2026-10-18] parameter listing for the optimizer
+    def named_params_and_grads(self, prefix: str = "") -> List[tuple]:
+        """[(name, parameter, gradient or None before backward)] for the embedding table."""
+        return [(prefix + "embedding", self.embedding, self.grads.get("embedding"))]
 
 
 # =============================================================================
@@ -615,7 +972,8 @@ class Transformer:
         n_decoder_layers: int = 6,
         d_ff: int = 2048,
         dropout_p: float = 0.1,
-        max_len: int = 5000
+        max_len: int = 5000,
+        share_embeddings: bool = False
     ):
         """
         Args:
@@ -628,6 +986,11 @@ class Transformer:
             d_ff: Feed-forward hidden dimension
             dropout_p: Dropout probability
             max_len: Maximum sequence length
+            share_embeddings: [PATCH 2026-10-18] Sec. 3.4 weight tying: one matrix
+                serves as source embedding, target embedding and (transposed) as the
+                pre-softmax projection. Needs src_vocab_size == tgt_vocab_size (the
+                paper used a shared source-target BPE vocabulary). Default False keeps
+                the original three separate matrices.
         """
         self.d_model = d_model
         self.training = True
@@ -652,6 +1015,25 @@ class Transformer:
         # Output projection
         self.output_projection = np.random.randn(d_model, tgt_vocab_size) * 0.02
     
+        # [PATCH 2026-10-18] Optional weight tying (Sec. 3.4) and backward-pass state.
+        self.share_embeddings = share_embeddings
+        if share_embeddings:
+            assert src_vocab_size == tgt_vocab_size, "weight tying needs one shared vocabulary"
+            # std d_model^-0.5 (our choice; the paper gives no initialisation): the scaled
+            # embedding E * sqrt(d_model) then has unit-variance entries, the scale of the
+            # positional encodings, and the tied logits h . e_v start with std ~1.
+            shared = np.random.randn(src_vocab_size, d_model) * d_model ** -0.5
+            self.src_embedding.embedding = shared
+            self.tgt_embedding.embedding = shared      # the SAME array object, not a copy
+            self.output_projection = None              # logits use shared.T, see _output_weights()
+        self.grads = {}   # gradient of the output projection (or of the shared matrix), set by backward()
+        self.cache = {}   # what backward() needs from encode()/decode()/forward()
+
+    # [PATCH 2026-10-18]
+    def _output_weights(self) -> np.ndarray:
+        """The (d_model, tgt_vocab) pre-softmax matrix: E^T when weights are tied (Sec. 3.4)."""
+        return self.src_embedding.embedding.T if self.share_embeddings else self.output_projection
+
     def encode(self, src: np.ndarray, src_mask: Optional[np.ndarray] = None) -> np.ndarray:
         """
         Encode source sequence.
@@ -666,6 +1048,9 @@ class Transformer:
         # Embed and add positional encoding
         x = self.src_embedding.forward(src) * np.sqrt(self.d_model)
         x = self.positional_encoding.forward(x)
+        # [PATCH 2026-10-18] decode() reuses the positional-encoding module, which would
+        # overwrite its dropout cache: keep this call's cache for backward()
+        self.cache["src_pe"] = self.positional_encoding.cache
         
         # Pass through encoder layers
         for layer in self.encoder_layers:
@@ -691,6 +1076,7 @@ class Transformer:
         # Embed and add positional encoding
         x = self.tgt_embedding.forward(tgt) * np.sqrt(self.d_model)
         x = self.positional_encoding.forward(x)
+        self.cache["tgt_pe"] = self.positional_encoding.cache  # [PATCH 2026-10-18] see encode()
         
         # Pass through decoder layers
         for layer in self.decoder_layers:
@@ -720,9 +1106,92 @@ class Transformer:
         decoder_output = self.decode(tgt, encoder_output, tgt_mask, src_mask)
         
         # Project to vocabulary
-        logits = decoder_output @ self.output_projection
+        # [PATCH 2026-10-18] via _output_weights() (E^T when tied); keep outputs for backward()
+        logits = decoder_output @ self._output_weights()
+        self.cache["encoder_output"] = encoder_output
+        self.cache["decoder_output"] = decoder_output
         
         return logits
+
+    # [PATCH 2026-10-18] backward pass through the whole model
+    def backward(self, grad_logits: np.ndarray) -> None:
+        """
+        Backpropagate dL/dlogits from the last forward() call through every layer.
+
+        Order (reverse of forward): output projection -> decoder layers (last first)
+        -> target embedding; then encoder layers (last first) -> source embedding.
+        The encoder output was read by the cross-attention of EVERY decoder layer,
+        so its gradient is the sum of those contributions; it is complete only
+        after the whole decoder stack is done, which is why the encoder goes second.
+
+        Args:
+            grad_logits: dL/dlogits, (batch, tgt_len, tgt_vocab_size), e.g. from
+                train_minimal.cross_entropy_loss_and_grad.
+        Afterwards every module's .grads is filled; collect them with gradients().
+        """
+        D = self.d_model
+        decoder_output = self.cache["decoder_output"]
+        V = grad_logits.shape[-1]
+
+        # logits = decoder_output @ W_out, W_out (D, V) shared by all (batch, position) rows:
+        # flatten them, (D, B*T) @ (B*T, V) -> (D, V)
+        d_W_out = decoder_output.reshape(-1, D).T @ grad_logits.reshape(-1, V)
+        d_dec = grad_logits @ self._output_weights().T          # (B, T, V) @ (V, D) -> (B, T, D)
+
+        # Decoder stack, last layer first; sum the encoder-output gradients
+        d_enc = np.zeros_like(self.cache["encoder_output"])     # (B, S, D)
+        for layer in reversed(self.decoder_layers):
+            d_dec, d_enc_from_layer = layer.backward(d_dec)
+            d_enc += d_enc_from_layer
+
+        # x = dropout(E_tgt[tgt] * sqrt(d_model) + PE): through dropout/PE, then the constant scale
+        d_tgt_emb = self.positional_encoding.backward(d_dec, self.cache["tgt_pe"]) * np.sqrt(D)
+        self.tgt_embedding.backward(d_tgt_emb)
+
+        # Encoder stack, last layer first, starting from the summed gradient
+        d_x = d_enc
+        for layer in reversed(self.encoder_layers):
+            d_x = layer.backward(d_x)
+        d_src_emb = self.positional_encoding.backward(d_x, self.cache["src_pe"]) * np.sqrt(D)
+        self.src_embedding.backward(d_src_emb)
+
+        if self.share_embeddings:
+            # One matrix used in three places -> its gradient is the sum of the three uses.
+            # The projection used E^T, so its (D, V) gradient is transposed back to (V, D).
+            self.grads = {"shared_embedding": self.src_embedding.grads["embedding"]
+                          + self.tgt_embedding.grads["embedding"] + d_W_out.T}
+        else:
+            self.grads = {"output_projection": d_W_out}
+
+    # [PATCH 2026-10-18] parameter / gradient collection for the optimizer
+    def named_params_and_grads(self) -> List[tuple]:
+        """
+        Every trainable array exactly once, as (name, parameter, gradient) in a fixed
+        order; gradient is None until backward() has run. With share_embeddings the
+        tied matrix appears once, as "shared_embedding", with the summed gradient.
+        """
+        if self.share_embeddings:
+            items = [("shared_embedding", self.src_embedding.embedding, self.grads.get("shared_embedding"))]
+        else:
+            items = (self.src_embedding.named_params_and_grads("src_embedding.")
+                     + self.tgt_embedding.named_params_and_grads("tgt_embedding.")
+                     + [("output_projection", self.output_projection, self.grads.get("output_projection"))])
+        for i, layer in enumerate(self.encoder_layers):
+            items += layer.named_params_and_grads(f"encoder_layers.{i}.")
+        for i, layer in enumerate(self.decoder_layers):
+            items += layer.named_params_and_grads(f"decoder_layers.{i}.")
+        return items
+
+    def parameters(self) -> List[np.ndarray]:
+        """The trainable arrays (the model's own objects: update them IN PLACE)."""
+        return [param for _, param, _ in self.named_params_and_grads()]
+
+    def gradients(self) -> List[np.ndarray]:
+        """Gradients from the last backward(), in the same order as parameters()."""
+        grads = [grad for _, _, grad in self.named_params_and_grads()]
+        if any(g is None for g in grads):
+            raise RuntimeError("no gradients yet: call forward() and backward() first")
+        return grads
     
     def train(self):
         self.training = True
