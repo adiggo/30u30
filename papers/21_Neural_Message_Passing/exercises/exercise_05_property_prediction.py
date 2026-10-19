@@ -11,7 +11,7 @@ This exercise combines:
   - Set2Set readout (Exercise 3)
   - Training loop with proper batching
 
-Reference: Gilmer et al. 2017, Sections 2, 4, and 6 (Table 2)
+Reference: Gilmer et al. 2017, Sections 2, 5, and 8 (Table 2)
 """
 
 import sys
@@ -67,7 +67,8 @@ class PropertyPredictor(nn.Module):
         # 1. Node encoder: Linear(node_dim -> hidden_dim)
         # 2. Edge network: Sequential(Linear(edge_dim -> 64) -> ReLU -> Linear(64 -> hidden_dim * hidden_dim))
         # 3. GRU update: GRUCell(hidden_dim, hidden_dim)
-        # 4. Set2Set LSTM: LSTMCell(2 * hidden_dim, hidden_dim)
+        # 4. Set2Set: projection Linear(hidden_dim + node_dim -> hidden_dim) applied to [h_v^T, x_v]
+        #    (Section 5.3; e.g. self.s2s_project) and LSTMCell(2 * hidden_dim, hidden_dim)
         # 5. Output MLP: Sequential(Linear(2 * hidden_dim -> hidden_dim) -> ReLU -> Linear(hidden_dim -> output_dim))
         self.node_encoder = None   # TODO
         self.edge_nn = None        # TODO
@@ -97,9 +98,11 @@ class PropertyPredictor(nn.Module):
         #     m = scatter_sum(messages, target_indices)
         #     h = gru(m, h)
         #
-        # Phase 2: Set2Set Readout
-        #   Run set2set_steps of LSTM-attention over final node states
-        #   Output through MLP
+        # Phase 2: Set2Set Readout (Section 5.3; Vinyals et al. 2016, Eqs. 3-7)
+        #   m = s2s_project(cat([h, batch.node_features]))
+        #   q_star = zeros(n_graphs, 2d); for each step: q = LSTM(q_star); attend over m with q
+        #   (softmax per graph); r = weighted sum of m; q_star = cat([q, r])
+        #   Output: output_mlp(q_star)
         raise NotImplementedError("Implement PropertyPredictor.forward")
 
 

@@ -14,7 +14,7 @@ By 2017, several neural network models for learning on graphs had been proposed 
 
 Gilmer et al. noticed this and did something simple but important: they unified all of these models into a single framework called **Message Passing Neural Networks (MPNNs)**. The framework has exactly two phases — a message passing phase and a readout phase — and each existing model is just a specific instantiation of the message function, update function, and readout function.
 
-They then used this framework to explore new variants and applied them to the QM9 benchmark — a dataset of ~130,000 small organic molecules with 13 quantum-chemical properties computed via Density Functional Theory (DFT). The result: predictions reaching chemical accuracy on 11 of the 13 properties (Section 6, Table 2).
+They then used this framework to explore new variants and applied them to the QM9 benchmark — a dataset of ~130,000 small organic molecules with 13 quantum-chemical properties computed via Density Functional Theory (DFT). The result: predictions reaching chemical accuracy on 11 of the 13 properties (Section 8, Table 2).
 
 The paper matters beyond chemistry. The MPNN framework became the standard way to think about graph neural networks. If you understand message passing, you understand the backbone of nearly every GNN that followed.
 
@@ -56,7 +56,7 @@ Different choices of $M$, $U$, and $R$ recover different existing models. The pa
 
 ## What the Authors Actually Showed
 
-### The QM9 Benchmark (Section 5)
+### The QM9 Benchmark (Section 4)
 
 QM9 contains ~130,000 small organic molecules (H, C, N, O, F atoms, up to 9 heavy atoms). Each molecule has 13 quantum-chemical properties computed via DFT at the B3LYP/6-31G(2df,p) level. The properties include:
 
@@ -68,16 +68,16 @@ QM9 contains ~130,000 small organic molecules (H, C, N, O, F atoms, up to 9 heav
 - Heat capacity (Cv)
 - Vibrational frequencies
 
-### Results (Section 6, Table 2)
+### Results (Section 8, Table 2)
 
 The best MPNN variant achieved chemical accuracy on 11 out of 13 targets. "Chemical accuracy" is a predefined error threshold established by the chemistry community for each property — it's the point where DFT predictions are accurate enough to be useful.
 
 Key results from Table 2:
 - Best overall: MPNN with edge network message function + GRU update + Set2Set readout
-- The two targets that did NOT reach chemical accuracy: mu (dipole moment) and alpha (isotropic polarizability)
-- With only graph topology (no 3D coordinates): chemical accuracy on several of the 13 targets
+- The two targets that did NOT reach chemical accuracy: the HOMO-LUMO gap (error ratio 1.60) and ZPVE (1.27); mu (0.30) and alpha (0.92) did reach it
+- With only graph topology (no 3D coordinates): chemical accuracy on 5 of the 13 targets with a set2set output, using a DFT-computed partial-charge input feature (Section 8)
 
-### Unification (Section 3)
+### Unification (Section 2)
 
 The paper shows that existing models map to specific MPNN instantiations:
 
@@ -92,7 +92,7 @@ The paper shows that existing models map to specific MPNN instantiations:
 
 ## The Architecture
 
-### 1. Message Function — Edge Network (Section 4.1)
+### 1. Message Function — Edge Network (Section 5.1)
 
 The best-performing message function uses a neural network to process edge features:
 
@@ -110,17 +110,28 @@ $$h_v^{t+1} = \text{GRU}(h_v^t, m_v^{t+1})$$
 
 The GRU treats the aggregated message $m_v^{t+1}$ as the "input" and the previous hidden state $h_v^t$ as the "recurrent state." All weights are shared across message passing steps.
 
-### 3. Readout Function — Set2Set (Section 4.3)
+### 3. Readout Function — Set2Set (Section 5.3)
 
-For graph-level predictions, the individual node states need to be combined into a single vector. Simple summation loses information. The paper uses **Set2Set** (Vinyals et al. 2015) — an attention-based method that iteratively queries the set of node embeddings using an LSTM:
+For graph-level predictions, the individual node states need to be combined into a single vector. The paper compares GG-NN's gated sum (Eq. 4) with **Set2Set** (Vinyals et al. 2016), an attention-based method that iteratively queries the set of node vectors using an LSTM. Set2set "first applies a linear projection to each tuple $(h_v^T, x_v)$" (Section 5.3), giving one vector $m_v$ per atom, and then runs $M$ processing steps from $q^*_0 = 0$:
 
-1. Initialize a query vector $q_0$
-2. At each processing step $t$: compute attention over all node embeddings, produce a weighted sum, feed into the LSTM to get the next query
-3. After $M$ processing steps, output the final query-embedding pair
+1. $q_t = \mathrm{LSTM}(q^*_{t-1})$: the LSTM's hidden state is the query
+2. Attention over the atoms of the molecule: $a_v = \mathrm{softmax}_v(m_v \cdot q_t)$, read $r_t = \sum_v a_v m_v$
+3. $q^*_t = [q_t ; r_t]$; after $M$ steps, $q^*_M$ goes through an MLP
 
-Set2Set is permutation-invariant (order of nodes doesn't matter) but more expressive than simple sum/mean pooling.
+Set2Set is permutation-invariant (order of nodes doesn't matter). Its read, though, is a weighted *average*: the weights $a_v$ of a molecule sum to 1, so giving every atom a twin leaves $r_t$ unchanged. On its own it reports the composition of a molecule, not its size, and it cannot represent an *extensive* target (one that grows with the number of atoms, like a total energy) unless the node vectors carry that information.
 
-### 4. Virtual Graph Elements (Section 4.2)
+**In this repo** (2026-10-18), `Set2SetReadout` follows the paper: projection of $(h_v^T, x_v)$, Vinyals' order (LSTM step, then attention). The earlier version attended before the LSTM step and read $h_v^T$ only. The *default* readout, however, is now **sum**. The synthetic target here is extensive: a sum of per-atom constants plus 0.1 x (number of bonds) x (target index + 1), plus noise. Test MAE after 50 epochs (`validation/day21_readout_fix.py`; seed 42, plus seeds 1 and 2, which also change the generated molecules; for seed 42, predicting the mean gives 2.98 and least squares on atom and bond counts 0.089):
+
+| Readout | Seed 42 | Mean of 3 seeds (range) |
+|---|---|---|
+| sum | 0.24 | 0.19 (0.17-0.24) |
+| set2set as it was | 2.06 | 2.26 (1.98-2.75) |
+| set2set as in the paper (projection + Vinyals order) | 1.80 | 2.17 (1.80-2.62) |
+| same, with T = 6 message-passing rounds | 1.89 | not run |
+
+Making set2set paper-faithful changes its accuracy here by less than the seed-to-seed spread: the bottleneck is the weighted average, not the details of the recurrence. The sum readout is ~10x better. Use `--readout set2set` to train the paper's readout.
+
+### 4. Virtual Graph Elements (Section 5.2)
 
 The paper also experiments with adding "virtual edges" between all pairs of atoms (a latent fully-connected graph on top of the real molecular graph). This allows information to travel between distant atoms in fewer message passing steps. The virtual edges have their own learned features distinct from real bonds.
 
@@ -133,12 +144,12 @@ Key decisions in `implementation.py`:
 - **Graph representation**: Each molecule is a tuple of `(node_features, edge_index, edge_features, target)`. Node features are one-hot atom type + other atomic properties. Edge features encode bond type, distance, etc.
 - **Edge network**: A 2-layer MLP maps edge features to a $d \times d$ matrix. The matrix is reshaped from the MLP output. This is the most parameter-heavy part.
 - **GRU update**: Standard PyTorch GRU cell. The aggregated message is the input, previous node state is the hidden state.
-- **Set2Set readout**: LSTM-based with $M=6$ processing steps (following the paper). The output is $2d$-dimensional (concatenation of query and weighted node embedding).
+- **Readout**: sum by default (see "Readout Function" above). **Set2Set** (`--readout set2set`): projection of $(h_v^T, x_v)$, then $M = 6$ processing steps (the paper picked $M$ by random search over 1-12); the output $q^*_M$ is $2d$-dimensional (query and attention read).
 - **Batching**: Multiple graphs are batched by concatenating their node/edge lists and tracking which nodes belong to which graph. This is the standard approach in PyTorch Geometric, but we implement it from scratch here.
 
 Things that will bite you:
-- **Edge network memory**: The $d \times d$ matrix per edge is expensive. For large molecules or large $d$, this dominates memory. The paper uses $d = 200$ for QM9.
-- **Message passing steps**: More steps = larger receptive field but diminishing returns and training instability. The paper uses $T = 6$ steps.
+- **Edge network memory**: The $d \times d$ matrix per edge is expensive. For large molecules or large $d$, this dominates memory. ($d = 200$ appears in the paper's GG-NN/towers runs; the best model's $d$ is not reported.)
+- **Message passing steps**: More steps = larger receptive field but diminishing returns and training instability. The paper picked $T$ by random search over 3-8 per target (Section 7); this repo uses $T = 3$.
 - **Node feature initialization**: Atom type is one-hot encoded. If you forget to include hydrogen atoms (which QM9 has explicitly), your graph is wrong.
 - **Numerical targets**: QM9 properties span wildly different scales (e.g., dipole moment in Debye vs. atomization energy in eV). Normalize each target independently.
 
@@ -152,9 +163,11 @@ Things that will bite you:
 cd papers/21_Neural_Message_Passing
 pip install -r requirements.txt
 python train_minimal.py --epochs 50 --hidden-dim 64 --n-messages 3
+# the paper's set2set readout instead of the default sum readout:
+python train_minimal.py --readout set2set
 ```
 
-This trains an MPNN on synthetic molecular data and reports mean absolute error per property.
+This trains an MPNN (edge network + GRU + sum readout) on synthetic molecular data in about 30 seconds and reports the test MAE.
 
 ### Exercises (in `exercises/`)
 
@@ -172,13 +185,13 @@ Solutions are in `exercises/solutions/`. Try to get stuck first.
 
 ## Key Takeaways
 
-1. **MPNNs unify existing graph neural networks.** Convolutional Networks on Graphs, Gated Graph NNs, Interaction Networks, and others are all specific instantiations of the same message/update/readout framework. The paper makes this explicit. (Section 3)
+1. **MPNNs unify existing graph neural networks.** Convolutional Networks on Graphs, Gated Graph NNs, Interaction Networks, and others are all specific instantiations of the same message/update/readout framework. The paper makes this explicit. (Section 2)
 
-2. **The edge network is the key architectural choice for molecular data.** Using a neural network to map edge features to transformation matrices (rather than having a fixed matrix per edge type) allows handling continuous features like bond length and angle. This was the best-performing message function. (Section 4.1)
+2. **The edge network is the key architectural choice for molecular data.** Using a neural network to map edge features to transformation matrices (rather than having a fixed matrix per edge type) allows handling continuous features like bond length and angle. This was the best-performing message function. (Section 5.1, Section 8)
 
-3. **Set2Set readout outperforms simple aggregation.** For graph-level predictions, attention-based aggregation (Set2Set) captures more structure than sum or mean pooling. The improvement is consistent across targets. (Section 4.3, Table 2)
+3. **The readout must fit the target.** The paper's best QM9 model reads out with set2set (Section 5.3; it has no set2set-vs-sum ablation in Table 2). Set2set's attention read is a weighted average, so on an extensive target (a sum over atoms) a plain sum readout is far better: test MAE 0.19 vs 2.17 on this repo's synthetic data (means of 3 seeds).
 
-4. **Chemical accuracy is achievable from data.** On 11 of 13 QM9 targets, the MPNN matches the accuracy threshold where DFT predictions become practically useful — learned entirely from data, without hand-crafted quantum chemistry features. (Section 6, Table 2)
+4. **Chemical accuracy is achievable from data.** On 11 of 13 QM9 targets, the MPNN matches the accuracy threshold where DFT predictions become practically useful — learned entirely from data, without hand-crafted quantum chemistry features. (Section 8, Table 2)
 
 5. **The framework transcends chemistry.** While the experiments are on molecules, the MPNN framework applies to any domain with graph-structured data: social networks, knowledge graphs, physical simulations, program analysis. The message passing abstraction is domain-agnostic. (Section 1)
 

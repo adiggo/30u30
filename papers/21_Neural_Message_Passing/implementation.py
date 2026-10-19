@@ -12,15 +12,18 @@ The framework has two phases:
    (Section 2, Equation 3)
 
 This implementation provides:
-- Three message function variants (Section 3-4)
+- Three message function variants (Sections 2 and 5.1)
 - GRU update function (Section 2)
-- Sum and Set2Set readout functions (Section 4.3)
-- Edge network for continuous edge features (Section 4.1)
+- Sum and Set2Set readout functions (Section 5.3)
+- Edge network for continuous edge features (Section 5.1)
 - Graph batching utilities for training
 - Synthetic molecular data generator for demonstration
 
-The paper uses GRU update, edge network messages, and Set2Set readout as the
-best-performing combination (Table 2).
+The paper's best QM9 model uses GRU update, edge network messages, and a
+Set2Set readout (Section 8, Table 2). [PATCH 2026-10-18] This repo's synthetic
+target is extensive (a sum over atoms and bonds), so MPNN defaults to the sum
+readout here; set2set reads an attention-weighted average and cannot represent
+a total by itself (README, "Readout").
 """
 
 import math
@@ -158,12 +161,12 @@ def batch_graphs(graphs: List[MolecularGraph]) -> BatchedGraph:
 # SECTION 2: MESSAGE FUNCTIONS
 # ============================================================================
 # The message function M(h_v, h_w, e_vw) computes a message from neighbor w
-# to node v. Different choices of M give different models (Section 3).
+# to node v. Different choices of M give different models (Section 2).
 #
 # We implement three variants:
 # 1. SimpleMessage: M = h_w (just pass neighbor state — Duvenaud et al.)
 # 2. MatrixMessage: M = A_{e_vw} * h_w (one matrix per edge type — Li et al.)
-# 3. EdgeNetwork: M = A(e_vw) * h_w (NN maps features to matrix — Section 4.1)
+# 3. EdgeNetwork: M = A(e_vw) * h_w (NN maps features to matrix — Section 5.1)
 # ============================================================================
 
 
@@ -173,7 +176,8 @@ class SimpleMessage(nn.Module):
     M(h_v, h_w, e_vw) = h_w
 
     This is the message function used in Convolutional Networks on Graphs
-    (Duvenaud et al. 2015), as described in Section 3 of the paper.
+    (Duvenaud et al. 2015), as described in Section 2 of the paper. (The paper
+    writes Duvenaud's message as the concatenation (h_w, e_vw); this variant drops e_vw.)
     """
     def __init__(self, hidden_dim: int, edge_dim: int):
         super().__init__()
@@ -204,7 +208,7 @@ class MatrixMessage(nn.Module):
     M(h_v, h_w, e_vw) = A_{e_vw} * h_w
 
     This is the message function used in Gated Graph Neural Networks
-    (Li et al. 2015), as described in Section 3. Requires discrete edge types.
+    (Li et al. 2015), as described in Section 2. Requires discrete edge types.
 
     Note: edge_dim here is treated as the number of discrete edge types.
     The edge features should be integer indices, not continuous vectors.
@@ -248,7 +252,7 @@ class EdgeNetwork(nn.Module):
     to a transformation matrix.
     M(h_v, h_w, e_vw) = A(e_vw) * h_w
 
-    This is the paper's key contribution (Section 4.1). The neural network
+    This is the paper's key contribution (Section 5.1). The neural network
     A: R^{edge_dim} -> R^{d x d} maps the edge feature vector to a d x d
     matrix. This handles continuous edge features (bond lengths, angles)
     naturally, unlike MatrixMessage which requires discrete types.
@@ -299,7 +303,7 @@ class EdgeNetwork(nn.Module):
 # We implement two variants:
 # 1. SumReadout: R = MLP(sum(h_v)) — simple but baseline
 # 2. Set2SetReadout: R = Set2Set({h_v}) — LSTM-attention, more expressive
-#    (Section 4.3, from Vinyals et al. 2015)
+#    (Section 5.3, from Vinyals et al. 2016)
 # ============================================================================
 
 
@@ -371,7 +375,11 @@ class SumReadout(nn.Module):
 
     This is the simplest permutation-invariant aggregation. It captures
     the total "mass" of node features but loses information about their
-    distribution. Used as baseline in Section 6.
+    distribution. [PATCH 2026-10-18] It is not one of the paper's two readouts
+    (Sec. 5.3 compares GG-NN's gated sum, Eq. 4, with set2set) but it is the
+    right inductive bias for an EXTENSIVE target (one that grows with the number
+    of atoms, like the synthetic target here or a total energy): a sum of per-atom
+    contributions is linear in exactly what matters.
     """
     def __init__(self, hidden_dim: int, output_dim: int):
         super().__init__()
@@ -384,12 +392,15 @@ class SumReadout(nn.Module):
     def forward(
         self,
         node_embeddings: torch.Tensor,
-        batch_indices: torch.Tensor
+        batch_indices: torch.Tensor,
+        node_features: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Args:
             node_embeddings: (total_nodes, hidden_dim)
             batch_indices: (total_nodes,) — which graph each node belongs to
+            node_features: unused here; accepted so that every readout has the
+                same call signature ([PATCH 2026-10-18], see Set2SetReadout)
 
         Returns:
             (n_graphs, output_dim) — per-graph predictions
@@ -402,32 +413,54 @@ class SumReadout(nn.Module):
 
 class Set2SetReadout(nn.Module):
     """
-    Set2Set readout (Section 4.3): attention-based aggregation using LSTM.
+    Set2Set readout (Gilmer et al. Sec. 5.3; Vinyals, Bengio, Kudlur 2016,
+    "Order Matters", Sec. 4.2, the "process block", Eqs. 3-7).
 
-    From Vinyals et al. 2015 (Day 16). Iteratively:
-      1. Use LSTM hidden state as query
-      2. Compute attention over node embeddings
-      3. Weighted sum of node embeddings
-      4. Feed concatenation of query and weighted sum back into LSTM
+    Paper, Sec. 5.3: "This model first applies a linear projection to each
+    tuple (h_v^T, x_v) and then takes as input the set of projected tuples
+    T = {(h_v^T, x_v)}. Then, after M steps of computation, the set2set model
+    produces a graph level embedding q*_t which is invariant to the order of
+    the tuples T. We feed this embedding q*_t through a neural network to
+    produce the output."
 
-    After processing_steps iterations, output the final [query, weighted_sum]
-    concatenation — a 2*hidden_dim vector per graph.
+    With m_v = W [h_v^T ; x_v] + b (the projection) and q*_0 = 0, each of the
+    M processing steps does (Vinyals et al., Eqs. 3-7):
+        q_t     = LSTM(q*_{t-1})            the LSTM's hidden state is the query
+        e_{v,t} = m_v . q_t                 one dot-product score per node
+        a_{v,t} = softmax of e over the nodes of the same graph
+        r_t     = sum_v a_{v,t} m_v         attention read
+        q*_t    = [q_t ; r_t]
+    and the prediction is MLP(q*_M).
 
-    More expressive than sum/mean pooling because it can attend to different
-    subsets of nodes in different processing steps (the paper uses 6 steps).
+    Because the weights a_{v,t} of a graph sum to 1, r_t is a weighted
+    AVERAGE of the m_v: giving every node a twin leaves it unchanged. So
+    set2set on its own reports proportions, not totals, and cannot represent
+    an extensive target (one that grows with the number of atoms) unless the
+    node vectors already carry that information. See README ("Readout").
+
+    [PATCH 2026-10-18] Two changes to match the paper: (1) the optional
+    projection of (h_v^T, x_v) (node_dim given; MPNN always passes it), and
+    (2) Vinyals' order: LSTM step first, then attend with the new query. The
+    previous version attended with the old LSTM state before each step (so
+    its first read was a plain mean), fed [h, r] to the LSTM, and output the
+    last state with the read from one step earlier. Standalone use without
+    node_dim (as in the exercises) applies the process block to the h_v^T.
     """
     def __init__(
         self,
         hidden_dim: int,
         output_dim: int,
-        processing_steps: int = 6
+        processing_steps: int = 6,
+        node_dim: Optional[int] = None
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.processing_steps = processing_steps
-        # LSTM takes concatenation of query and weighted sum
+        # Linear projection of the tuple (h_v^T, x_v) -> m_v (Sec. 5.3)
+        self.project = nn.Linear(hidden_dim + node_dim, hidden_dim) if node_dim else None
+        # LSTM: input q*_{t-1} = [q_{t-1} ; r_{t-1}] (2d), hidden state q_t (d)
         self.lstm = nn.LSTMCell(2 * hidden_dim, hidden_dim)
-        # Final prediction from 2*hidden_dim (query + weighted sum)
+        # Final prediction from q*_M (2 * hidden_dim)
         self.mlp = nn.Sequential(
             nn.Linear(2 * hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -437,49 +470,55 @@ class Set2SetReadout(nn.Module):
     def forward(
         self,
         node_embeddings: torch.Tensor,
-        batch_indices: torch.Tensor
+        batch_indices: torch.Tensor,
+        node_features: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Args:
-            node_embeddings: (total_nodes, hidden_dim)
+            node_embeddings: (total_nodes, hidden_dim) — final node states h_v^T
             batch_indices: (total_nodes,) — which graph each node belongs to
+            node_features: (total_nodes, node_dim) — input features x_v; required
+                when the readout was built with node_dim
 
         Returns:
             (n_graphs, output_dim) — per-graph predictions
         """
         n_graphs = batch_indices.max().item() + 1
-        device = node_embeddings.device
 
-        # Initialize LSTM states
-        h = torch.zeros(n_graphs, self.hidden_dim, device=device)
-        c = torch.zeros(n_graphs, self.hidden_dim, device=device)
-        # Initialize weighted sum
-        r = torch.zeros(n_graphs, self.hidden_dim, device=device)
+        if self.project is not None:
+            if node_features is None:
+                raise ValueError("this Set2SetReadout projects (h_v^T, x_v): pass node_features")
+            # cat along features: (total_nodes, hidden_dim + node_dim) -> Linear -> (total_nodes, hidden_dim)
+            m = self.project(torch.cat([node_embeddings, node_features], dim=-1))
+        else:
+            m = node_embeddings
+
+        # q*_0 = 0; LSTM state (q, c) starts at 0. new_zeros keeps m's dtype and device.
+        q_star = m.new_zeros(n_graphs, 2 * self.hidden_dim)
+        q = m.new_zeros(n_graphs, self.hidden_dim)
+        c = m.new_zeros(n_graphs, self.hidden_dim)
 
         for _ in range(self.processing_steps):
-            # Query: current LSTM hidden state, expanded to per-node
-            q = h[batch_indices]  # (total_nodes, hidden_dim)
+            # q_t = LSTM(q*_{t-1}): (n_graphs, 2d) -> (n_graphs, d)
+            q, c = self.lstm(q_star, (q, c))
 
-            # Attention logits: dot product of query and node embeddings
-            e = (node_embeddings * q).sum(dim=-1)  # (total_nodes,)
+            # Score every node against its own graph's query: q[batch_indices] repeats
+            # graph g's query once per node of g -> (total_nodes, d); dot product -> (total_nodes,)
+            e = (m * q[batch_indices]).sum(dim=-1)
 
             # Softmax per graph
             a = scatter_softmax(e, batch_indices, dim_size=n_graphs)
 
-            # Weighted sum of node embeddings per graph
+            # r_t: attention-weighted sum (= weighted average, weights sum to 1) -> (n_graphs, d)
             r = scatter_sum(
-                a.unsqueeze(-1) * node_embeddings,
+                a.unsqueeze(-1) * m,
                 batch_indices,
                 dim_size=n_graphs
-            )  # (n_graphs, hidden_dim)
+            )
 
-            # LSTM update: input is [query, weighted_sum]
-            lstm_input = torch.cat([h, r], dim=-1)  # (n_graphs, 2*hidden_dim)
-            h, c = self.lstm(lstm_input, (h, c))
+            q_star = torch.cat([q, r], dim=-1)  # q*_t: (n_graphs, 2d)
 
-        # Final output: concatenation of last query and weighted sum
-        graph_embedding = torch.cat([h, r], dim=-1)  # (n_graphs, 2*hidden_dim)
-        return self.mlp(graph_embedding)
+        return self.mlp(q_star)
 
 
 # ============================================================================
@@ -505,12 +544,18 @@ class MPNN(nn.Module):
     Args:
         node_dim: Dimension of input node features (e.g., 5 for one-hot atom types)
         edge_dim: Dimension of edge features (e.g., 4 for one-hot bond types)
-        hidden_dim: Dimension of node hidden states (paper uses 200)
-        output_dim: Number of target properties to predict (QM9 has 13)
-        n_messages: Number of message passing rounds T (paper uses 6)
-        message_type: 'simple', 'matrix', or 'edge_network' (paper uses edge_network)
-        readout_type: 'sum' or 'set2set' (paper uses set2set)
-        set2set_steps: Processing steps for Set2Set readout (paper uses 6)
+        hidden_dim: Dimension of node hidden states (d = 200 appears in the paper's
+            GG-NN/towers runs; the best model's d is not reported)
+        output_dim: Number of target properties to predict (QM9 has 13; the paper
+            trains one model per target)
+        n_messages: Number of message passing rounds T (paper: random search over
+            3 <= T <= 8, Sec. 7)
+        message_type: 'simple', 'matrix', or 'edge_network' (paper's best: edge_network)
+        readout_type: 'sum' (default here) or 'set2set' (paper's best QM9 model)
+        set2set_steps: Processing steps M for Set2Set (paper: random search over
+            1 <= M <= 12, Sec. 7)
+    [PATCH 2026-10-18] corrected the "paper uses" values above (they were T = 6,
+    M = 6, d = 200; Sec. 7 searched T and M per target).
     """
     def __init__(
         self,
@@ -520,17 +565,19 @@ class MPNN(nn.Module):
         output_dim: int = 1,
         n_messages: int = 3,
         message_type: str = 'edge_network',
-        readout_type: str = 'set2set',
+        readout_type: str = 'sum',
         set2set_steps: int = 6
     ):
         super().__init__()
+        # [PATCH 2026-10-18] default readout 'sum' (was 'set2set'): the repo's synthetic target is
+        # extensive, which an attention-weighted average cannot represent (see Set2SetReadout)
         self.hidden_dim = hidden_dim
         self.n_messages = n_messages
 
         # Project node features to hidden dimension
         self.node_encoder = nn.Linear(node_dim, hidden_dim)
 
-        # Message function (Section 3-4)
+        # Message function (Sections 2 and 5.1)
         message_classes = {
             'simple': SimpleMessage,
             'matrix': MatrixMessage,
@@ -547,11 +594,12 @@ class MPNN(nn.Module):
         # The aggregated message is the "input", previous node state is "hidden"
         self.gru = nn.GRUCell(hidden_dim, hidden_dim)
 
-        # Readout function (Section 4.3)
+        # Readout function (Section 5.3)
         if readout_type == 'sum':
             self.readout = SumReadout(hidden_dim, output_dim)
         elif readout_type == 'set2set':
-            self.readout = Set2SetReadout(hidden_dim, output_dim, set2set_steps)
+            # [PATCH 2026-10-18] node_dim: project the tuple (h_v^T, x_v) as in Sec. 5.3
+            self.readout = Set2SetReadout(hidden_dim, output_dim, set2set_steps, node_dim=node_dim)
         else:
             raise ValueError(
                 f"Unknown readout_type '{readout_type}'. Choose from: 'sum', 'set2set'"
@@ -588,8 +636,9 @@ class MPNN(nn.Module):
             # Update node states: h_v = GRU(h_v, m_v)
             h = self.gru(m, h)
 
-        # Readout phase: aggregate node states to graph-level prediction
-        return self.readout(h, batch.batch_indices)
+        # Readout phase: aggregate node states to graph-level prediction.
+        # [PATCH 2026-10-18] the input features x_v go along: set2set reads (h_v^T, x_v) (Sec. 5.3)
+        return self.readout(h, batch.batch_indices, batch.node_features)
 
 
 # ============================================================================
@@ -613,7 +662,7 @@ class MPNN(nn.Module):
 # ============================================================================
 
 
-# Atom types from QM9 (Section 5)
+# Atom types from QM9 (Section 4)
 ATOM_TYPES = ['H', 'C', 'N', 'O', 'F']
 BOND_TYPES = ['single', 'double', 'triple', 'aromatic']
 
@@ -753,7 +802,8 @@ def train_epoch(
     Args:
         model: MPNN model.
         data: List of training MolecularGraph instances.
-        optimizer: Optimizer (paper uses Adam with lr=1e-4).
+        optimizer: Optimizer (paper: Adam, initial lr drawn from [1e-5, 5e-4] with
+            linear decay, Sec. 7).
         batch_size: Number of graphs per batch (paper uses 20).
         device: Device to train on.
 
@@ -771,7 +821,9 @@ def train_epoch(
 
         optimizer.zero_grad()
         predictions = model(batch)
-        # L1 loss (MAE) — consistent with QM9 evaluation metric (Table 2)
+        # L1 loss (MAE), the metric the paper reports. [PATCH 2026-10-18] The paper itself
+        # trains with MSE on targets normalized to mean 0, variance 1 (Sec. 7) and only
+        # evaluates MAE; this repo trains directly on the unnormalized L1.
         loss = F.l1_loss(predictions, batch.targets)
         loss.backward()
         # Gradient clipping (common practice, 1.0 is a standard default)
@@ -868,7 +920,7 @@ if __name__ == '__main__':
         output_dim=3,
         n_messages=3,
         message_type='edge_network',
-        readout_type='set2set',
+        readout_type='sum',  # [PATCH 2026-10-18] was 'set2set'; see the module docstring
         set2set_steps=6
     )
     print(f"\n{summarize_model(model)}")
