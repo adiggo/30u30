@@ -58,21 +58,22 @@ where:
 - A too-complex model: $L(D \mid H)$ is small (good fit), but $L(H)$ is large (many parameters to specify)
 - An overfit model (e.g., degree-99 polynomial for 100 points): $L(H)$ can exceed the raw data cost. The "model" is longer than just listing the data.
 
-The sum automatically finds the balance. No tuning parameter is needed.
+The sum finds the balance, but the crude version still has a knob: how many bits a coefficient costs. Different hypothesis codes prefer different models (the tutorial's "bad news", Sec. 2.4.2); coding each parameter to the optimal precision ~1/sqrt(n) costs about (1/2) log2 n bits (eq. 2.9).
 
 ### Example: Polynomial Degree Selection
 
-Data generated from a degree-3 polynomial with noise. Which degree fits best?
+`train_minimal.py`'s default data: a degree-2 polynomial plus noise (sigma 1.5, 50 points). The crude code spends 33 bits per coefficient plus 42 bits for sigma; the last column is the refined (NML) code length of Sec. 2.6, computed as described below. Numbers are bits.
 
-| Degree | L(H) (model bits) | L(D\|H) (residual bits) | Total |
-|--------|-------------------|------------------------|-------|
-| 1 | 64 | 1842 | 1906 |
-| 2 | 96 | 892 | 988 |
-| 3 | 128 | 412 | **540** |
-| 4 | 160 | 401 | 561 |
-| 9 | 320 | 389 | 709 |
+| Degree | L(H) (model bits) | L(D\|H) (residual + sigma bits) | Two-part total | NML: fit + complexity |
+|--------|-------------------|------------------------|-------|-------|
+| 0 | 34.5 | 388.2 | 422.7 | 346.2 + 2.6 = 348.9 |
+| 1 | 68.5 | 294.7 | 363.2 | 252.7 + 10.4 = 263.2 |
+| 2 | 102.8 | 165.7 | **268.5** | 123.7 + 23.1 = **146.8** |
+| 3 | 136.5 | 163.5 | 300.0 | 121.5 + 30.4 = 151.9 |
+| 4 | 170.3 | 162.5 | 332.9 | 120.5 + 37.4 = 158.0 |
+| 9 | 337.4 | 161.3 | 498.7 | 119.3 + 69.9 = 189.3 |
 
-MDL selects degree 3 — the true generating degree. The extra parameters in degree 4+ don't compress the data enough to justify their cost.
+Both select degree 2, the true generating degree. Going from degree 2 to 3 saves about 2 bits of fit; the crude code charges 33.7 more bits of model cost, NML 7.3 more bits of complexity.
 
 ---
 
@@ -86,7 +87,7 @@ $$L(H) = k \cdot b$$
 
 This is the crude version. The paper discusses more refined approaches:
 - **Universal integer codes** for model order (e.g., polynomial degree)
-- **Adaptive precision** — parameters near zero cost fewer bits than large parameters
+- **Optimal precision** — coding each parameter to precision about $1/\sqrt{n}$ costs about $\frac12\log n$ bits per parameter, giving the BIC-like form of eq. 2.9; finer precision wastes bits (Sec. 2.4.2)
 - **Two-stage codes** — first encode the model class, then the parameters within that class
 
 ### Data Description Length L(D|H)
@@ -124,7 +125,7 @@ This is the **cumulative log-loss** (surprise) of a sequential predictor. No mod
 - Natural for online/sequential settings
 - The model class's complexity is automatically accounted for through prediction performance
 
-The paper shows that prequential MDL is connected to Bayesian model averaging via the prequential plug-in code, where you use the maximum likelihood estimate at each step.
+Under regularity conditions the plug-in code pays the same $\frac{k}{2}\log n$ penalty as NML (Sec. 2.6.4, eq. 2.30). The plain maximum-likelihood plug-in can fail at small samples (after "0, 0" it gives the next "1" probability zero, Example 2.19). Laplace's estimator ($\lambda = 1$, equivalent to Bayes with a uniform prior) and Jeffreys' ($\lambda = 1/2$) avoid this.
 
 ---
 
@@ -144,41 +145,49 @@ The numerator is the best the model class can do on THIS data (maximum likelihoo
 
 A more flexible model class has a larger denominator (it can fit many different datasets well), so each individual dataset gets a lower probability — more bits to encode.
 
-### Stochastic Complexity
+### Parametric and Stochastic Complexity
 
-The NML codelength for data $x^n$ under model class $\mathcal{M}$ is:
+The log of NML's normaliser is the **parametric complexity** of the model class (Sec. 2.5.3, eq. 2.17):
 
-$$\text{COMP}(\mathcal{M}, n) = \log \sum_{y^n} P(y^n \mid \hat{\theta}(y^n))$$
+$$\text{COMP}_n(\mathcal{M}) = \log \sum_{y^n} P(y^n \mid \hat{\theta}(y^n))$$
 
-This is the **stochastic complexity** of the model class. It measures the "number of different datasets the model class can fit well" — a formal version of model complexity.
+It measures how many different datasets the model class can fit well, and NML's regret equals it for every dataset (eq. 2.19). The NML code length of the data, $-\log P(x^n \mid \hat\theta(x^n)) + \text{COMP}_n(\mathcal{M})$, is the data's **stochastic complexity** (eq. 2.20). Asymptotically (eq. 2.21, Sec. 2.6),
 
-**For Gaussian models:**
+$$\text{COMP}_n(\mathcal{M}) = \frac{k}{2} \log \frac{n}{2\pi} + \log \int_\Theta \sqrt{\det I(\theta)}\, d\theta + o(1)$$
 
-$$\text{COMP} \approx \frac{k}{2} \log \frac{n}{2\pi}$$
+where $k$ is the number of parameters and $I$ the Fisher information. The first term is similar to the BIC penalty; the integral is the model's volume counted in distinguishable distributions, and it is what lets two models with the same $k$ differ (Example 1.4). The tutorial warns that the expansion can be badly off at small $n$ and is valid only for $k \ll n$ (Sec. 2.6.2, Sec. 2.10.2).
 
-where $k$ is the number of parameters and $n$ is the sample size. This is similar to the BIC penalty but derived from information-theoretic first principles rather than Bayesian approximation.
+### Gaussian Models: COMP Is Infinite
+
+For Gaussian models the integral diverges. In the location model with known $\sigma$, the data's own mean is always a perfect fit, so the maximised likelihood does not shrink as the data move away from 0 and the integral over all datasets is infinite (Example 2.20). In regression with $\sigma$ fitted it diverges a second time, as the residual variance goes to 0. Sec. 2.8 states that the NML distribution for regression "is not well-defined". The tutorial's remedies (Sec. 2.7.2):
+
+- **Restrict, then pay for the restriction.** Bound the parameters (e.g. $|\hat\mu| \le K$, giving $\text{COMP} = \log K + \frac12\log\frac{n}{2\pi} - \log\sigma + 1$), and encode the bound first with a meta-two-part code (eqs. 2.34-2.35). Restricting the parameter values instead of the data is Foster and Stine's variant.
+- **Renormalise** (Rissanen's RNML, eq. 2.36): choose the bound from the data, then normalise again.
+- Never cut the range at an arbitrary value (Sec. 2.10.2).
+
+**What our code does.** `nml_complexity_polynomial` computes COMP for the polynomial model with known $\sigma$ and the fitted curve's mean square bounded by $R$. Its leading term is eq. 2.21, $\frac k2\log_2\frac{n}{2\pi} + \log_2[V_k (R/\sigma^2)^{k/2}]$ bits ($V_k$ = unit-ball volume): finite, $\ge 0$, growing with the degree and by $\frac k2\log_2 10$ bits per 10x of $R$. `nml_mdl_polynomial` selects the degree with Rissanen's (2000) RNML for unknown $\sigma$. Both are checked against eq. 2.21 and Monte Carlo in `validation/day05_nml_check.py`. Over 100 datasets per setting, RNML picks the true degree 99 and 97 times; BIC does so 93 and 85 times.
 
 ---
 
 ## MDL vs. AIC vs. BIC
 
-The paper devotes significant attention to comparing MDL with other model selection criteria.
+The tutorial relates MDL to BIC (Sec. 2.9.2, eq. 2.42) but deliberately does not analyse AIC: "relations between MDL and Akaike's AIC are subtle" (Sec. 2.9). The table is standard background; penalties are in bits per parameter (the $-\log_2$ likelihood scale).
 
-| Criterion | Penalty | Derivation | Properties |
+| Criterion | Penalty (bits per parameter) | Derivation | Properties |
 |-----------|---------|-----------|------------|
-| AIC | $2k$ | KL divergence minimization | Asymptotically efficient; tends to overfit in finite samples |
-| BIC | $k \log n$ | Laplace approximation to Bayesian marginal likelihood | Consistent (selects true model as $n \to \infty$) |
-| MDL (NML) | $\approx \frac{k}{2} \log \frac{n}{2\pi}$ | Minimax optimal universal code | Consistent; adapts to parameter geometry |
+| AIC | $1/\ln 2 \approx 1.44$ ($2k$ on the $-2\ln L$ scale) | Expected KL divergence (prediction) | Penalty does not grow with $n$; over-fits in our experiments |
+| BIC | $\frac12\log_2 n$ ($k \ln n$ on the $-2\ln L$ scale) | Laplace approximation to Bayesian marginal likelihood | Consistent (selects true model as $n \to \infty$) |
+| MDL (NML) | $\approx \frac{1}{2} \log_2 \frac{n}{2\pi}$ plus the model's share of $\log_2\int\sqrt{\det I}$ | Minimax regret universal code (Sec. 2.5.3) | Sees functional form; for regression it needs a bounded parameter space |
 
-### Key differences from the paper:
+### Key differences
 
-1. **AIC does not penalize enough.** For polynomial selection, AIC systematically overfits in small samples because the $2k$ penalty doesn't grow with $n$.
+1. **AIC under-penalizes for finding the true degree.** Its penalty does not grow with $n$; in `train_minimal.py --monte-carlo` it picks the true degree in 58 of 100 datasets (BIC 85, NML 97). This is our experiment, not the tutorial's.
 
-2. **BIC is close to MDL.** For regular exponential family models, BIC approximates the NML codelength. The paper shows the connection: BIC $\approx$ NML + lower-order terms.
+2. **BIC is close to MDL, but not equal.** For a fixed number of parameters, BIC's $\frac{k}{2}\log n$ is the leading term of COMP (eq. 2.21). The tutorial still calls "MDL = BIC" wrong: the $O(1)$ terms (functional form) matter at small $n$, and when the number of parameters grows with $n$ each one costs much less than $\frac12 \log n$ (Sec. 2.9.2).
 
-3. **MDL adapts to parameter geometry.** Unlike AIC/BIC, which penalize each parameter equally, MDL's penalty depends on how the parameters are used. A parameter near zero (barely used) costs fewer bits than a parameter far from zero.
+3. **MDL sees functional form.** The $\log\int\sqrt{\det I(\theta)}\,d\theta$ term of eq. 2.21 lets two models with the same $k$ differ in complexity (Stevens' vs Fechner's law, Example 1.4). AIC and BIC only count parameters. For Gaussian regression the integral, and COMP, is infinite unless the parameters are bounded, so NML's price also depends on the bound (Sec. 2.7.2).
 
-4. **MDL does not assume a "true model" exists.** AIC and BIC both assume the data was generated by some model in the class. MDL makes no such assumption — it works purely from compression.
+4. **MDL does not assume a "true model" exists.** It is motivated by compression and does not need the data to come from a distribution in the class (Sec. 1.5).
 
 ---
 
@@ -188,13 +197,11 @@ The paper traces MDL's intellectual lineage:
 
 **Kolmogorov Complexity $K(x)$**: The length of the shortest program that produces $x$. This is the "ideal" description length — the absolute limit of compression.
 
-**Problem**: $K(x)$ is uncomputable (undecidable).
+**Problem**: $K(x)$ is uncomputable (undecidable), and for small samples it depends on arbitrary details of the programming language's syntax (Sec. 1.2.1).
 
-**MDL's relationship**: MDL restricts to a computable model class and minimizes description length within that class. As the model class grows (becomes more expressive), MDL codelengths approach $K(x)$:
+**MDL's relationship**: practical MDL restricts itself to codes built from a model class and minimizes description length within that class (Sec. 1.2.2). Sec. 2.9.4 returns to Kolmogorov's structure function and "ideal MDL".
 
-$$\text{MDL} \to K(x) \text{ as model class } \to \text{ all computable functions}$$
-
-This connection, emphasized by Rissanen, gives MDL a philosophical foundation: learning is compression, and the best compression of a dataset captures its true regularities.
+This connection, emphasized by Rissanen, gives MDL a philosophical foundation: learning is compression, and the best compression of a dataset captures its regularities.
 
 ### Important nuance from the paper
 
@@ -205,7 +212,7 @@ Grünwald is careful to distinguish MDL from naive "compression = intelligence" 
 ## What the Paper Doesn't Do
 
 - **No deep learning**: The examples are polynomials, Markov models, and simple parametric families. Neural networks are mentioned only in passing.
-- **No algorithm for NML computation**: For most model classes, computing the NML normalizing constant is intractable. The paper discusses approximations.
+- **No general algorithm for NML**: the normaliser is usually evaluated numerically or approximated with eq. 2.21; the only closed form the tutorial knows of is the Gaussian case of Example 2.20 (Sec. 2.6). For regression it refers to Rissanen (2000), whose closed form our code uses.
 - **No claim that MDL is always better**: Grünwald is explicit that MDL, AIC, and BIC all have regimes where they work well. MDL's advantage is theoretical principled-ness, not necessarily practical superiority in all settings.
 
 ---
@@ -214,13 +221,13 @@ Grünwald is careful to distinguish MDL from naive "compression = intelligence" 
 
 The paper is theoretical. Our implementation makes it concrete:
 
-1. **Two-part code model selection** — polynomial regression with bits computation (demonstrates Section 3 of the paper)
-2. **Prequential MDL** — sequential prediction for time-series-like data (implements Section 5)
-3. **NML complexity computation** — approximate stochastic complexity for Gaussian models (implements Section 6)
-4. **MDL vs. AIC vs. BIC comparison** — head-to-head on polynomial selection (implements Section 8's comparison)
+1. **Two-part code model selection** — polynomial regression with bits computation (crude MDL, Secs. 1.3 and 2.4)
+2. **Prequential MDL** — sequential prediction for time-series-like data (Sec. 2.6.4)
+3. **NML complexity computation** — exact parametric complexity of the restricted polynomial model with known sigma, checked against eq. 2.21 and Monte Carlo; Rissanen's renormalised NML for selection with unknown sigma (Secs. 2.5.3, 2.6, 2.7.2, 2.8)
+4. **MDL vs. AIC vs. BIC comparison** — head-to-head on polynomial selection (background for Sec. 2.9)
 5. **Monte Carlo trials** — statistical comparison across many random datasets (our addition for robustness testing)
 
-The polynomial selection experiment is the paper's running example. The Monte Carlo comparison is our extension.
+Polynomial selection is the tutorial's Example 1.2; the running example of its Chapter 2 is Markov chains. The Monte Carlo comparison is our extension.
 
 ---
 
@@ -228,13 +235,14 @@ The polynomial selection experiment is the paper's running example. The Monte Ca
 
 | Concept | Equation | Source |
 |---------|----------|--------|
-| Two-Part MDL | $L(H) + L(D \mid H)$ | Paper, Section 3 |
-| Gaussian residual code | $\frac{n}{2}\log_2(2\pi e \hat{\sigma}^2)$ | Paper, Section 3 |
-| Prequential MDL | $\sum_i -\log_2 P(x_i \mid x_{<i})$ | Paper, Section 5 |
-| NML distribution | $P_{\text{NML}}(x) = P(x \mid \hat{\theta}(x)) / C_n$ | Paper, Section 6 |
-| Stochastic complexity | $\text{COMP} \approx \frac{k}{2}\log\frac{n}{2\pi}$ | Paper, Section 6 |
-| AIC | $-2\log L + 2k$ | Akaike (1974), discussed in Section 8 |
-| BIC | $-2\log L + k\log n$ | Schwarz (1978), discussed in Section 8 |
+| Two-Part MDL | $L(H) + L(D \mid H)$ | Paper, Sec. 1.3; Sec. 2.4 (eqs. 2.8-2.9) |
+| Gaussian residual code | $\frac{n}{2}\log_2(2\pi e \hat{\sigma}^2)$ | Paper, eq. 2.40 at the ML fit (Sec. 2.8) |
+| Prequential MDL | $\sum_i -\log_2 P(x_i \mid x_{<i})$ | Paper, Sec. 2.6.4 (eq. 2.29) |
+| NML distribution | $P_{\text{NML}}(x) = P(x \mid \hat{\theta}(x)) / C_n$ | Paper, Sec. 2.5.3 (eq. 2.18) |
+| Parametric complexity | $\text{COMP}_n = \log C_n \approx \frac{k}{2}\log\frac{n}{2\pi} + \log\int\sqrt{\det I}$ | Paper, eqs. 2.17 and 2.21 |
+| Restricted Gaussian location COMP | $\log K + \frac12 \log\frac{n}{2\pi} - \log\sigma + 1$ | Paper, Example 2.20 (Sec. 2.7.2) |
+| AIC | $-2\log L + 2k$ | Akaike (1974); not analysed in the tutorial (Sec. 2.9) |
+| BIC | $-2\log L + k\log n$ | Schwarz (1978); Paper, Sec. 2.9.2 (eq. 2.42) |
 
 ---
 
