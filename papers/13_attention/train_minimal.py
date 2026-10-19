@@ -20,8 +20,9 @@ warmup_steps = 800, because with 4000 a run of ~2k steps would end before the
 learning rate even peaks. (After the warm-up, Eq. 3 gives d_model^-0.5 * step^-0.5
 whatever warmup_steps is.)
 
-Default run (python train_minimal.py, copy task, about 2-3 minutes on one CPU core):
-see README.md ("Training It in NumPy") for the numbers.
+Default run (python train_minimal.py, copy task): ~53 s of CPU time on one core
+(2-3 minutes of wall time on a busy shared machine); README.md ("Training It in
+NumPy") has the numbers.
 """
 
 import argparse

@@ -400,8 +400,8 @@ Default run: copy sequences of 8 tokens drawn from 9 symbols, 2,000 training and
 | Before training | 2.520 (≈ ln 12) | 5.1% | 0% |
 | After training | 0.0045 | 100% | 100% |
 
-Training took 169 s on a shared 2-core machine (3 minutes in all with the evaluations); an idle
-core is faster. After training, the first decoder layer's cross-attention is the alignment: target
+The whole run takes about 53 s of CPU time on one core (2-3 minutes of wall time on our busy
+shared 2-core machine). After training, the first decoder layer's cross-attention is the alignment: target
 step t puts ~99% of its weight on source position t (on the reverse task, on position L-1-t).
 
 The other settings reach the same accuracy (test set, 1,860 steps):
