@@ -244,11 +244,16 @@ class SolutionMDLModelSelector:
             raise ValueError("Model not fitted. Call fit() first.")
         return np.poly1d(self.best_coefficients)(x)
     
-    def get_compression_ratio(self, x: np.ndarray, y: np.ndarray) -> float:
-        """Calculate compression ratio."""
-        raw_bits = len(y) * 32
-        mdl_bits = self.scores[self.best_degree]
-        return raw_bits / mdl_bits if mdl_bits > 0 else 0
+    def get_compression_ratio(self, x: np.ndarray, y: np.ndarray, precision: float = 0.01) -> float:
+        """Fixed-length code / model code, both for y rounded to `precision` (tutorial Sec. 2.2.2).
+
+        [PATCH 2026-10-18] was len(y) * 32 / MDL score, which compared float32 precision with
+        the unit precision of a density code length.
+        """
+        n_grid = np.floor((np.max(y) - np.min(y)) / precision) + 1   # grid points over the observed range
+        fixed_bits = len(y) * np.log2(n_grid)
+        model_bits = self.scores[self.best_degree] - len(y) * np.log2(precision)
+        return fixed_bits / model_bits if model_bits > 0 else 0
     
     def get_model_probability(self, degree: int) -> float:
         """Get approximate posterior probability."""
@@ -536,6 +541,67 @@ def solution_monte_carlo_comparison(
         'aic_accuracy': correct['aic'] / n_trials,
         'bic_accuracy': correct['bic'] / n_trials
     }
+
+
+# [PATCH 2026-10-18] Reference solutions for the three exercise-5 analyses that had none.
+def solution_analyze_sample_size_effect(
+    true_degree: int = 2,
+    sample_sizes: Tuple[int, ...] = (20, 50, 100, 200, 500),
+    noise_std: float = 1.5,
+    n_trials: int = 50
+) -> Dict[str, List[float]]:
+    """Accuracy of each criterion at each sample size (same seeds 0..n_trials-1 at every size)."""
+    out = {'mdl': [], 'aic': [], 'bic': []}
+    for n in sample_sizes:
+        acc = solution_monte_carlo_comparison(true_degree, n, noise_std, n_trials)
+        for method in out:
+            out[method].append(acc[f'{method}_accuracy'])
+    return out
+
+
+def solution_analyze_noise_level_effect(
+    true_degree: int = 2,
+    n_samples: int = 50,
+    noise_levels: Tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
+    n_trials: int = 50
+) -> Dict[str, List[float]]:
+    """Accuracy of each criterion at each noise level (same seeds at every level)."""
+    out = {'mdl': [], 'aic': [], 'bic': []}
+    for noise_std in noise_levels:
+        acc = solution_monte_carlo_comparison(true_degree, n_samples, noise_std, n_trials)
+        for method in out:
+            out[method].append(acc[f'{method}_accuracy'])
+    return out
+
+
+def solution_when_do_they_disagree(
+    x: np.ndarray,
+    y: np.ndarray,
+    max_degree: int = 10
+) -> Dict:
+    """Degree picked by each criterion and why they differ.
+
+    All three trade the same fit term, -2 ln L at the ML fit, against a price per coefficient:
+    AIC 2, BIC ln n, and the crude two-part code 33 bits = 33 * 2 ln 2 = 45.7 on the -2 ln L
+    scale (plus a small log* term for the degree). Between two degrees lo < hi, a criterion
+    prefers hi exactly when the drop in -2 ln L exceeds its price times (hi - lo).
+    """
+    n = len(x)
+    results = solution_select_with_all_criteria(x, y, max_degree)
+    picks = {m: results[m]['best'] for m in ('mdl', 'aic', 'bic')}
+    lo, hi = min(picks.values()), max(picks.values())
+    if lo == hi:
+        return {'picks': picks, 'methods_agree': True,
+                'explanation': f"all three pick degree {lo}"}
+    # -2 ln L(d) = AIC(d) - 2k with k = d + 2 (coefficients + variance)
+    minus_2ll = {d: results['aic']['scores'][d] - 2 * (d + 2) for d in (lo, hi)}
+    drop, extra = minus_2ll[lo] - minus_2ll[hi], hi - lo
+    explanation = (
+        f"AIC picks {picks['aic']}, BIC {picks['bic']}, two-part MDL {picks['mdl']}. Degree {hi} lowers "
+        f"-2 ln L by {drop:.1f} relative to degree {lo} with {extra} more coefficient(s). A criterion "
+        f"prefers {hi} if that exceeds its price x {extra}: AIC 2, BIC ln n = {np.log(n):.1f}, "
+        f"two-part MDL {33 * 2 * np.log(2):.1f} per coefficient.")
+    return {'picks': picks, 'methods_agree': False, 'fit_gain': drop, 'explanation': explanation}
 
 
 # =============================================================================

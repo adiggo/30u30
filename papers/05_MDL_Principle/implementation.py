@@ -1057,28 +1057,57 @@ def compare_mdl_aic_bic(
 # SECTION 7: UTILITY FUNCTIONS
 # =============================================================================
 
+# [PATCH 2026-10-18] The old compression_ratio divided n * 32 bits ("32-bit floats") by an MDL
+# score. That compares two different precisions: -log2 of a density is the code length of the
+# data at UNIT precision (tutorial Sec. 2.2.2, "Continuous Sample Spaces"), i.e. y rounded to
+# whole units, while a float32 keeps ~7 significant digits. Code lengths of continuous data only
+# compare at a stated precision delta: rounding y to a grid of width delta costs
+#     -log2 f(y) - n log2(delta) bits        (for delta much smaller than the noise),
+# the same shift -n log2(delta) for every density-based code. Differences between such codes do
+# not depend on delta; ratios do, so a ratio must always be quoted with its delta.
+
+def fixed_precision_code_length(data: np.ndarray, precision: float = 0.01) -> float:
+    """
+    Bits to send `data` rounded to multiples of `precision` with a fixed-length code over the
+    observed range: every value costs log2(number of grid points in [min, max]). This is the
+    model-free baseline at that precision (sending the range itself, two numbers, is not counted).
+    """
+    n_points = np.floor((np.max(data) - np.min(data)) / precision) + 1   # grid points covering the range
+    return float(len(data) * np.log2(n_points))
+
+
+def code_length_at_precision(model_mdl: float, n: int, precision: float = 0.01) -> float:
+    """A density-based code length (bits at unit precision) converted to precision `precision`."""
+    return float(model_mdl - n * np.log2(precision))
+
+
 def compression_ratio(
     data: np.ndarray,
-    model_mdl: float
+    model_mdl: float,
+    precision: float = 0.01
 ) -> float:
     """
-    Compute compression ratio achieved by MDL model.
-    
-    Ratio > 1: Model compresses data (good!)
-    Ratio < 1: Model expands data (bad!)
-    Ratio = 1: No compression (data might be random)
-    
+    Compression ratio of a model's code against the fixed-length code, both at `precision`.
+
+        ratio = fixed_precision_code_length(data, precision)
+                / code_length_at_precision(model_mdl, len(data), precision)
+
+    Ratio > 1: the model's code is shorter than writing every value with a fixed-length code at
+    the same precision. The ratio depends on the precision (both codes grow by n log2(1/delta)
+    as delta shrinks, so the ratio tends to 1); the difference in bits does not. Prefer the
+    difference, or compare two models' code lengths directly.
+
     Args:
-        data: Original data array
-        model_mdl: MDL score of the model
-        
+        data: Original data array (n,)
+        model_mdl: The model's code length in bits at unit precision (an MDL score built from
+                   -log2 densities, e.g. two_part_mdl_polynomial's total)
+        precision: Grid width delta to which the data are rounded (units of the data)
+
     Returns:
-        Compression ratio
+        Compression ratio at that precision
     """
-    # Raw data cost: float32 per element
-    raw_bits = len(data) * 32
-    
-    return raw_bits / model_mdl if model_mdl > 0 else 0
+    model_bits = code_length_at_precision(model_mdl, len(data), precision)
+    return fixed_precision_code_length(data, precision) / model_bits if model_bits > 0 else 0.0
 
 
 def mdl_model_probability(
@@ -1269,21 +1298,30 @@ def main():
         print(f"  Degree {deg}: {probs[deg]:.4f} {bar}")
     
     # =========================================================================
-    # Compression Analysis
+    # [PATCH 2026-10-18] Code lengths at a stated precision. This replaces "n x 32-bit floats
+    # divided by the MDL score", which compared float32 precision with unit precision.
     # =========================================================================
     print()
     print("-" * 50)
-    print("COMPRESSION ANALYSIS")
+    print("CODE LENGTHS AT A STATED PRECISION")
     print("-" * 50)
-    
-    raw_bits = len(y) * 32
-    best_mdl = result['total_mdl']
-    ratio = compression_ratio(y, best_mdl)
-    
-    print(f"\nRaw data size: {raw_bits} bits ({len(y)} × 32-bit floats)")
-    print(f"MDL compressed: {best_mdl:.0f} bits")
-    print(f"Compression ratio: {ratio:.2f}x")
-    print(f"\n{'[ok] Found compressible structure!' if ratio > 1 else '[FAIL] Data appears random.'}")
+
+    delta = 0.01                                     # y is sent rounded to 2 decimals
+    n = len(y)
+    best = result['best_degree']
+    fixed_bits = fixed_precision_code_length(y, delta)
+    two_part_0 = code_length_at_precision(result['scores'][0], n, delta)
+    two_part_best = code_length_at_precision(result['scores'][best], n, delta)
+    print(f"\n-log2 density is a code length at unit precision (tutorial Sec. 2.2.2). Sending y rounded")
+    print(f"to delta = {delta} adds -n log2(delta) = {-n * np.log2(delta):.1f} bits to every density-based code.")
+    print(f"  Fixed-length code over the observed range: {fixed_bits:7.1f} bits")
+    print(f"  Two-part code, degree 0:                   {two_part_0:7.1f} bits")
+    print(f"  Two-part code, degree {best} (selected):        {two_part_best:7.1f} bits")
+    gap = fixed_bits - two_part_best
+    print(f"The selected model saves {two_part_0 - two_part_best:.1f} bits over degree 0 and is "
+          f"{abs(gap):.1f} bits {'shorter' if gap > 0 else 'longer'} than the fixed-length code;")
+    print(f"NML (RNML) saves {nml_result['scores'][0] - nml_result['total_mdl']:.1f} bits over degree 0. "
+          "These differences do not depend on delta (for delta well below the noise level).")
     
     print()
     print("=" * 70)

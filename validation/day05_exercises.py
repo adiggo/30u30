@@ -53,7 +53,11 @@ swaps = {
         'compute_bic': S.solution_compute_bic,
         'compute_mdl': lambda x, y, d, precision=32: S.solution_two_part_mdl(x, y, d, precision)[0],
         'select_with_all_criteria': S.solution_select_with_all_criteria,
-        'monte_carlo_comparison': S.solution_monte_carlo_comparison},
+        'monte_carlo_comparison': S.solution_monte_carlo_comparison,
+        # [PATCH 2026-10-18] the three analyses now have reference solutions
+        'analyze_sample_size_effect': S.solution_analyze_sample_size_effect,
+        'analyze_noise_level_effect': S.solution_analyze_noise_level_effect,
+        'when_do_they_disagree': S.solution_when_do_they_disagree},
 }
 summary = {}
 for name, fns in swaps.items():
