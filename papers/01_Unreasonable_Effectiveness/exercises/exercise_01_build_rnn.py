@@ -50,19 +50,25 @@ class CharRNN:
         self.bh = None   # TODO
         self.by = None   # TODO
         
-    def forward(self, inputs, h_prev):
+    def forward(self, inputs, targets, h_prev):
         """
         Forward pass through the RNN.
         
         Args:
             inputs: List of character indices (length = seq_length)
+            targets: List of target character indices, the next character after each input
+                     (the loss needs them)
             h_prev: Previous hidden state (hidden_size x 1)
             
         Returns:
-            loss: Cross-entropy loss
+            loss: Cross-entropy loss, summed over the sequence
             h_last: Final hidden state
             cache: Values needed for backward pass
         """
+        # [PATCH 2026-10-18] targets added: the loss -log p_t[target_t] cannot be computed without
+        # them (same signature as solutions/exercise_01_solution.py). The repo's
+        # implementation.CharRNN splits this into forward(inputs, hprev) and loss(ps, targets);
+        # here, as in Karpathy's min-char-rnn, forward() returns the loss as well.
         
         # Storage for forward pass
         xs, hs, ys, ps = {}, {}, {}, {}
@@ -141,6 +147,8 @@ class CharRNN:
         
         # TODO: Update each parameter
         # param = param - learning_rate * grad
+        # (plain SGD passes train_rnn() with learning_rate=0.1; the solution uses Adagrad, like
+        # min-char-rnn: keep a running sum of squared gradients and divide by its square root)
         
         pass
     
@@ -176,45 +184,55 @@ class CharRNN:
         return indices
 
 
-def train_rnn():
+def train_rnn(num_iterations=300, seed=0):
     """
-    Train the RNN on simple data.
-    
-    Test your implementation here!
+    Test harness: train your RNN on "abcabc..." and check that it learns the pattern.
+
+    Returns (mean loss per character over the first 20 updates, over the last 20 updates).
     """
-    
+    # [PATCH 2026-10-18] the harness was all TODOs (it trained nothing and checked nothing);
+    # it now runs your forward/backward/update_weights/sample and checks the loss
+    np.random.seed(seed)
+
     # Simple training data
-    data = "abcabcabcabcabcabc"
-    chars = list(set(data))
+    data = "abc" * 40
+    chars = sorted(set(data))          # sorted, so the indices are the same on every run
     vocab_size = len(chars)
-    
-    # Create mappings
     char_to_idx = {ch: i for i, ch in enumerate(chars)}
     idx_to_char = {i: ch for i, ch in enumerate(chars)}
-    
-    # Convert data to indices
     data_indices = [char_to_idx[ch] for ch in data]
-    
-    # TODO: Initialize your RNN
-    rnn = CharRNN(vocab_size=vocab_size, hidden_size=10, seq_length=3)
-    
-    # TODO: Training loop
-    # For each epoch:
-    #   1. Sample a sequence from data
-    #   2. Forward pass
-    #   3. Backward pass
-    #   4. Update weights
-    #   5. Print loss
-    
-    # Hint: Start with just 100 iterations
-    
-    print("Training complete!")
-    
-    # TODO: Generate some text
-    # h = np.zeros((rnn.hidden_size, 1))
-    # indices = rnn.sample(h, seed_idx=0, n=20)
-    # text = ''.join([idx_to_char[i] for i in indices])
-    # print(f"Generated: {text}")
+
+    seq_length, hidden_size = 3, 10
+    rnn = CharRNN(vocab_size=vocab_size, hidden_size=hidden_size, seq_length=seq_length,
+                  learning_rate=0.1)
+
+    h = np.zeros((hidden_size, 1))
+    p = 0
+    losses = []
+    for it in range(num_iterations):
+        if p + seq_length + 1 >= len(data_indices):    # wrap around and reset the memory
+            p = 0
+            h = np.zeros((hidden_size, 1))
+        inputs = data_indices[p:p + seq_length]
+        targets = data_indices[p + 1:p + seq_length + 1]   # the next character at each position
+
+        loss, h, cache = rnn.forward(inputs, targets, h)
+        grads = rnn.backward(inputs, targets, cache)
+        rnn.update_weights(grads)
+
+        losses.append(loss / seq_length)
+        p += seq_length
+        if it % 100 == 0:
+            print(f"Iteration {it}: loss {losses[-1]:.4f} per character")
+
+    first, last = np.mean(losses[:20]), np.mean(losses[-20:])
+    sample = rnn.sample(np.zeros((hidden_size, 1)), seed_idx=char_to_idx['a'], n=12)
+    print(f"Mean loss per character: first 20 updates {first:.3f}, last 20 updates {last:.3f} "
+          f"(uniform guess {np.log(vocab_size):.3f})")
+    print(f"Generated after 'a': {''.join(idx_to_char[i] for i in sample)!r} (expect 'bcabca...')")
+    assert last < 0.1, f"loss per character {last:.3f} did not fall below 0.1: check backward/update"
+    print("Training complete! Test passed.")
+    return first, last
 
 
 if __name__ == "__main__":

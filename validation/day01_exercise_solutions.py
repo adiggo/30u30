@@ -4,9 +4,12 @@ against the repo's implementation.CharRNN, and the exercise-1 harness with the s
 Run from anywhere:  OMP_NUM_THREADS=1 python validation/day01_exercise_solutions.py
 """
 import importlib.util
+import inspect
+import io
 import os
 import sys
 import traceback
+from contextlib import redirect_stdout
 
 import numpy as np
 
@@ -84,7 +87,18 @@ attempt('extract_rnn_features(repo CharRNN) shape == (3H,)',
 print('exercise_01 harness with the solution class swapped in:')
 e1 = load('e1', 'exercises/exercise_01_build_rnn.py')
 s1 = load('s1', 'exercises/solutions/exercise_01_solution.py')
+# [PATCH 2026-10-18] the skeleton's forward() had no targets and train_rnn() was all TODOs; both now
+# match the solution, so check the signatures and run the harness (it asserts the loss falls)
+sig_ex, sig_sol = (str(inspect.signature(c.forward)) for c in (e1.CharRNN, s1.CharRNN))
+attempt('skeleton forward%s == solution forward%s' % (sig_ex, sig_sol),
+        lambda: None if sig_ex == sig_sol else (_ for _ in ()).throw(AssertionError('signatures differ')))
 e1.CharRNN = s1.CharRNN
-attempt('exercise_01.train_rnn() with solution CharRNN', lambda: e1.train_rnn())
-print('  note: exercise skeleton forward(inputs, h_prev) asks for the loss but has no targets;'
-      ' the solution uses forward(inputs, targets, h_prev).')
+
+
+def harness():
+    with redirect_stdout(io.StringIO()):
+        first, last = e1.train_rnn()
+    return 'loss/char first 20 updates %.3f -> last 20 %.4f' % (first, last)
+
+
+attempt('exercise_01.train_rnn() with solution CharRNN', harness)
