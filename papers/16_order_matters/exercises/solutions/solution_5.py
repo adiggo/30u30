@@ -3,6 +3,7 @@ Solution 5: Traveling Salesman Problem (TSP)
 ============================================
 
 Deep learning solution for approximately solving the TSP.
+(TSP is a Pointer Networks experiment, Day 18; it is not in Order Matters.)
 """
 
 import torch
@@ -28,7 +29,9 @@ class TSPDataset(Dataset):
     def __getitem__(self, idx):
         cities = torch.rand(self.num_cities, 2)
         unvisited = set(range(self.num_cities))
-        current = 0
+        # [PATCH 2026-10-18] was `current = 0`: an order-invariant model cannot tell which city
+        # has index 0. Start at the leftmost city (defined by content) instead.
+        current = int(torch.argmin(cities[:, 0]))
         tour = [current]
         unvisited.remove(current)
         while unvisited:
@@ -41,7 +44,8 @@ class TSPDataset(Dataset):
 
 def train_tsp():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = ReadProcessWrite(input_dim=2, hidden_dim=128, use_set_encoder=True, num_layers=3).to(device)
+    # [PATCH 2026-10-18] new Read-Process-Write constructor (was use_set_encoder=True, num_layers=3)
+    model = ReadProcessWrite(input_dim=2, hidden_dim=128, process_steps=5, glimpses=1).to(device)
     dataset = TSPDataset(2000, 10)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

@@ -9,6 +9,9 @@ Task: Given city coordinates, find a tour that visits all cities and
 
 Concept: TSP is NP-Hard. Neural networks are used here to learn a strong 
          approximation heuristic.
+
+Note: TSP is a Pointer Networks experiment (Vinyals et al. 2015a, Day 18), not one of
+      Order Matters'.
 """
 
 import torch
@@ -43,7 +46,10 @@ class TSPDataset(Dataset):
     def _greedy_tour(self, cities):
         n = len(cities)
         unvisited = set(range(n))
-        current = 0
+        # [PATCH 2026-10-18] was `current = 0`. ReadProcessWrite is order-invariant: it cannot
+        # tell which city has index 0, so it could never learn the first step of such tours.
+        # Start at the leftmost city, a choice defined by the content of the set.
+        current = int(torch.argmin(cities[:, 0]))
         tour = [current]
         unvisited.remove(current)
         
@@ -70,11 +76,12 @@ def demo_tsp():
     num_cities = 10
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # [PATCH 2026-10-18] constructor of the new Read-Process-Write (was use_set_encoder=True, num_layers=3)
     model = ReadProcessWrite(
         input_dim=2, 
         hidden_dim=128, 
-        use_set_encoder=True,
-        num_layers=3
+        process_steps=5,
+        glimpses=1
     ).to(device)
     
     print("TSP model initialized.")

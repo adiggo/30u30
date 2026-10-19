@@ -19,8 +19,11 @@ import torch.nn.functional as F
 class SetEncoder(nn.Module):
     """
     Order-invariant encoder using self-attention.
-    Self-attention is natively permutation-invariant if positional 
-    encodings are omitted.
+    [PATCH 2026-10-18] Self-attention without positional encodings is permutation-
+    EQUIVARIANT: shuffling the inputs shuffles the output vectors the same way. A
+    symmetric pooling of them (the mean in the test below) is then invariant.
+    (Order Matters itself embeds each element with a small MLP and gets invariance
+    from the process block's attention: implementation.ReadProcessWrite.)
     """
     
     def __init__(self, input_dim, hidden_dim, num_heads=4):

@@ -3,22 +3,26 @@
   1. Permutation tests (eval mode, float64):
      a. implementation.SetEncoder is permutation-EQUIVARIANT: enc(x[perm]) == enc(x)[perm]
         (its mean-pool is therefore invariant) -- passes for any self-attention w/o positions.
-     b. implementation.ReadProcessWrite is NOT permutation-invariant: the WRITE block's
+     b. The ReadProcessWrite of the first round was NOT permutation-invariant: the WRITE block's
         PointerNetwork re-encodes the set with an order-sensitive nn.LSTM whose final state
         seeds the decoder, so shuffling the set changes the pointer distribution
-        (compared after mapping indices back).
+        (compared after mapping indices back). [2026-10-18: ReadProcessWrite was rewritten as the
+        paper's model; this check now rebuilds the old one from SetEncoder + PointerNetwork, and
+        a new line checks the new model. Full tests: day16_process_block_check.py]
      c. A paper-faithful PROCESS block (Eqs. 3-7: q_t = LSTM(q*_{t-1}) with no input,
         e_{i,t} = <m_i, q_t>, a = softmax, r_t = sum_i a_{i,t} m_i, q*_t = [q_t, r_t]) written
-        here from the equations IS invariant -- this is the component the repo omits.
+        here from the equations IS invariant -- the component the repo omitted until 2026-10-18
+        (implementation.ProcessBlock now; day16_process_block_check.py tests it against Eqs. 3-7).
   2. Pointer scores u_j = v^T tanh(W1 e_j + W2 d) vs an explicit loop; already-chosen and padded
      positions get probability exactly 0; greedy decoding emits a permutation.
   3. compute_loss(log_probs, targets): log_probs already holds log p(target_t) per step under
      teacher forcing, so the NLL is -log_probs.mean(). The original gather(1, targets) re-indexes
      the *step* axis by pointer values: identical for permutation targets (sorting, TSP), wrong
      otherwise (e.g. padded convex-hull targets). [Patched 2026-10-18 -> -log_probs.mean().]
-  4. ConvexHullDataset labels vs an independent monotone-chain hull; the padding scheme repeats an
-     index that the decoder has already masked -> teacher-forced log-prob = -inf.
-  5. train.py's train_epoch/evaluate (no main() exists, so nothing else runs them): 3 epochs of
+  4. ConvexHullDataset labels vs an independent monotone-chain hull; the padding scheme repeated an
+     index that the decoder has already masked -> teacher-forced log-prob = -inf. [2026-10-18: labels
+     are now canonical (leftmost first, CCW) + a STOP pointer + IGNORE padding -> finite.]
+  5. train.py's train_epoch/evaluate (originally there was no main() to run them): 3 epochs of
      sorting N=5 with ReadProcessWrite; loss falls, eval loss is the NLL of the *targets*
      (teacher-forced), accuracy is computed from the model's own argmax (patched metrics).
 
@@ -70,7 +74,21 @@ report("1a SetEncoder equivariant: enc(x[perm]) == enc(x)[perm]", (ep - e[:, per
 report("1a mean-pooled SetEncoder output invariant", (ep.mean(1) - e.mean(1)).abs().max().item(), 1e-10)
 
 # ---------------------------------------------------------------- 1b. ReadProcessWrite invariance
-rpw = imp.ReadProcessWrite(D_in, H, use_set_encoder=True, dropout=0.0).double().eval()
+
+
+# [PATCH 2026-10-18] ReadProcessWrite is now the paper's model; rebuild the first-round one
+# (ReadProcessWrite(use_set_encoder=True) = SetEncoder -> PointerNetwork) from the same classes.
+class OldReadProcessWrite(nn.Module):
+    def __init__(self, input_dim, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.encoder = imp.SetEncoder(input_dim, hidden_dim, dropout=dropout)
+        self.pointer_net = imp.PointerNetwork(hidden_dim, hidden_dim, dropout=dropout)
+
+    def forward(self, inputs, input_lengths, max_steps, **kwargs):
+        return self.pointer_net(self.encoder(inputs), input_lengths, max_steps, **kwargs)
+
+
+rpw = OldReadProcessWrite(D_in, H, dropout=0.0).double().eval()
 L = torch.full((B,), N)
 with torch.no_grad():
     _, _, att = rpw(x, L, max_steps=1)
@@ -80,10 +98,16 @@ with torch.no_grad():
     m = rpw.encoder(x)
     _, (h1, _) = rpw.pointer_net.encoder(m)
     _, (h2, _) = rpw.pointer_net.encoder(rpw.encoder(xp))
-report("1b ReadProcessWrite: first-step pointer distribution invariant to shuffling the set",
+report("1b OLD ReadProcessWrite: first-step pointer distribution invariant to shuffling the set",
        diff, 1e-6, expect_pass=False)
-report("1b ReadProcessWrite: decoder initial state (LSTM final h) invariant to shuffling",
+report("1b OLD ReadProcessWrite: decoder initial state (LSTM final h) invariant to shuffling",
        (h1 - h2).abs().max().item(), 1e-6, expect_pass=False)
+new_rpw = imp.ReadProcessWrite(D_in, H, process_steps=5, glimpses=1).double().eval()
+with torch.no_grad():
+    _, _, att = new_rpw(x, L, max_steps=1)
+    _, _, attp = new_rpw(xp, L, max_steps=1)
+report("1b NEW ReadProcessWrite (process block): first-step pointer distribution invariant to shuffling",
+       (attp[0][:, inv] - att[0]).abs().max().item(), 1e-12)
 
 
 # ---------------------------------------------------------------- 1c. paper-faithful process block
@@ -189,18 +213,20 @@ for k in range(200):
 report("4 hull vertex sets == monotone-chain hull (200 random 10-point sets, mismatches)", float(set_mismatch), 0)
 report("4 hull order is counter-clockwise (shoelace area > 0; violations)", float(orient_bad), 0)
 pts, lab = ds[0]
-print(f"[INFO] example hull label (10 points): {lab.tolist()} -> repeats pad index {lab[-1].item()}")
+# [PATCH 2026-10-18] labels end with STOP (= 10) and IGNORE_INDEX padding; the model needs the STOP slot
+print(f"[INFO] example hull label (10 points): {lab.tolist()} (STOP = 10, then IGNORE_INDEX = -1)")
 with torch.no_grad():
-    _, lp_h, _ = imp.ReadProcessWrite(2, H, use_set_encoder=True, dropout=0.0).eval()(
-        pts[None].double(), torch.tensor([10]), max_steps=10, teacher_forcing=lab[None])
-print(f"[INFO] teacher-forced log-probs on padded hull label: {[round(v, 2) for v in lp_h[0].tolist()]}")
-report("4 padded hull labels give finite teacher-forced log-probs", float(torch.isinf(lp_h).sum()), 0, expect_pass=False)
+    _, lp_h, _ = imp.ReadProcessWrite(2, H, stop_token=True).double().eval()(
+        pts[None].double(), torch.tensor([10]), max_steps=11, teacher_forcing=lab[None])
+print(f"[INFO] teacher-forced log-probs on the hull label: {[round(v, 2) for v in lp_h[0].tolist()]}")
+report("4 hull labels give finite teacher-forced log-probs (was -inf with repeat padding)",
+       float(torch.isinf(lp_h).sum()), 0)
 
 # ---------------------------------------------------------------- 5. train.py functions end to end
 torch.set_default_dtype(torch.float32)
 torch.manual_seed(3)
 from torch.utils.data import DataLoader  # noqa: E402
-model = imp.ReadProcessWrite(1, 32, use_set_encoder=True, dropout=0.0)
+model = imp.ReadProcessWrite(1, 32)  # [PATCH 2026-10-18] new constructor (was use_set_encoder=True, dropout=0.0)
 opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 tl = DataLoader(tr.SortingDataset(1024, 5), batch_size=32, shuffle=True)
 vl = DataLoader(tr.SortingDataset(256, 5), batch_size=64)
@@ -212,9 +238,18 @@ for ep in range(3):
     hist.append((round(trn[0], 3), round(trn[1], 3), round(val[0], 3), round(val[1], 3)))
 print(f"[INFO] train.py sorting N=5 (train loss, train acc, val loss, val greedy acc) per epoch: {hist}")
 report("5 train.py: loss decreases over 3 epochs (last - first)", hist[-1][0] - hist[0][0], 0.0)
-report("5 train.py: train accuracy is not trivially 1.0 under teacher forcing (|acc-1| > 0 -> 1-acc)",
-       float(hist[0][1] >= 1.0), 0)
+# [PATCH 2026-10-18] With masking, the new model can sort before any training (a random pointer
+# score that happens to be monotone in the value sorts every set), so a fast 1.0 no longer shows
+# the metric is wrong. Test the metric itself: a model that cannot learn (lr = 0) and is not
+# masked must score below 1.0; the pre-fix metric compared the fed targets with themselves (1.0).
+torch.manual_seed(4)
+frozen = imp.ReadProcessWrite(1, 32, mask_chosen=False)
+with contextlib.redirect_stderr(io.StringIO()):
+    _, frozen_acc = tr.train_epoch(frozen, tl, torch.optim.Adam(frozen.parameters(), lr=0.0), "cpu")
+print(f"[INFO] train_epoch accuracy of an untrained, unmasked model that cannot learn: {frozen_acc:.3f}")
+report("5 train.py: train accuracy is the model's own argmax, not the fed targets (1 if it reports 1.0)",
+       float(frozen_acc >= 1.0), 0)
 
 n_expected = sum(ok for _, ok, _ in RESULTS)
 print(f"\nSUMMARY: {n_expected}/{len(RESULTS)} checks behaved as expected "
-      f"(FAIL lines marked expected document real problems in the repo)")
+      f"(expected FAIL lines document the first-round ReadProcessWrite, rebuilt for comparison)")
