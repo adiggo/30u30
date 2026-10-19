@@ -11,7 +11,8 @@ Checks
  5. solution_01.conv_forward           vs F.conv2d
  6. solution_04 VGG-16 parameter count vs torchvision.models.vgg16()
  7. exercise check() functions run against the solution implementations (exercise/solution agreement)
- 8. cost estimate for train_minimal.py (numerical-gradient training)
+ 8. cost estimate for the old numerical-gradient trainer ([PATCH 2026-10-18] train_minimal.py now trains with
+    backprop; see validation/day28_backprop_check.py)
 """
 import importlib.util
 import itertools
@@ -152,9 +153,12 @@ t_fwd = (time.time() - t0) / 3
 n_params = model.count_parameters()
 per_batch = (2 * n_params + 1) * t_fwd
 n_batches = 200 // 8
+# [PATCH 2026-10-18] train_minimal.py no longer trains this way; this prices its old default (200 images,
+# batch 8, 3 epochs) with today's (vectorized im2col) forward pass
 print(f"[8] SimpleCNN params = {n_params:,}; one forward on a batch of 8 = {t_fwd * 1e3:.1f} ms; "
       f"numerical gradient needs 2*params forwards per batch -> ~{per_batch / 3600:.2f} h per batch, "
-      f"~{per_batch * n_batches * 3 / 86400:.1f} days for the default 3 epochs x {n_batches} batches")
+      f"~{per_batch * n_batches * 3 / 86400:.1f} days for the old numerical-gradient trainer's default "
+      f"3 epochs x {n_batches} batches")
 
 print('\nSUMMARY')
 for k, v in results.items():
