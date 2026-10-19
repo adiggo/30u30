@@ -20,8 +20,8 @@ Usage:
     # Learned autoregressive-flow (AF) prior, as in the paper
     python train_minimal.py --use-flow
 
-    # Longer opt-in run (about 15 minutes on one core)
-    python train_minimal.py --max-batches 1000 --eval-images 5000
+    # Longer opt-in run: one full epoch, 938 batches (about 16 minutes on one core)
+    python train_minimal.py --max-batches 0 --eval-images 5000
 
     # A deeper decoder (larger receptive field: 8 layers see 144 past pixels, 3 layers see 34)
     python train_minimal.py --decoder-layers 8
