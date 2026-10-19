@@ -1,8 +1,10 @@
-"""Day 17 reduced-configuration training check (the full train_minimal.py does ~1.3 s/iteration on one CPU thread
+"""Day 17 reduced-configuration training check (the full train_minimal.py did ~1.3 s/iteration on one CPU thread
 and had done only ~1,100 of its 10,001 iterations after 25 minutes).
+[2026-10-18] Since the vectorized shift, an iteration takes ~0.1 s and train_minimal.py's default run (3,000
+iterations, paper settings) learns the task itself; "save" now runs it with --iters 21.
 
-mode "save"  : execute train_minimal.py's own train() with range(10001) -> range(21) to see whether the
-               script reaches its end (torch.save) without crashing; the checkpoint it saves goes to
+mode "save"  : execute train_minimal.py as a script with --iters 21 to see whether it reaches its end
+               (torch.save) without crashing; the checkpoint it saves goes to
                validation/outputs/day17_reduced_train/ instead of the day directory.
 mode "learn" : same model / optimizer / clipping as train_minimal.py (RMSprop lr 1e-4, momentum 0.9, alpha 0.95,
                clip_grad_norm 10, controller 100, M = 20, batch 32) but N = 32 slots and lengths 1..5, for a fixed
@@ -27,7 +29,8 @@ import torch.nn as nn  # noqa: E402
 
 if MODE == "save":
     tm_path = os.path.join(DAY, "train_minimal.py")
-    src = open(tm_path).read().replace("range(10001)", "range(21)")
+    src = open(tm_path).read()
+    sys.argv = [tm_path, "--iters", "21", "--eval-every", "10"]  # [2026-10-18] run length is a CLI flag now
     t0 = time.time()
     try:
         # train_minimal.py saves its checkpoint next to __file__: point __file__ into OUT
