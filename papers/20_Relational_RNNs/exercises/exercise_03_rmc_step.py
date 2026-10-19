@@ -36,12 +36,14 @@ class RelationalMemoryStep(nn.Module):
         # TODO: Project input and tile it to match memory slots
         # input_proj: (batch, mem_size)
         # input_tiled: (batch, slots, mem_size)
-        input_proj = # YOUR CODE HERE
+        input_proj = None  # YOUR CODE HERE
+        if input_proj is None:  # [PATCH 2026-10-18] placeholders were `x = # ...` (SyntaxError); delete this guard once done
+            raise NotImplementedError("Exercise 3: fill in the TODOs in RelationalMemoryStep.forward")
         input_tiled = input_proj.unsqueeze(1).expand(-1, self.mem_slots, -1)
         
         # TODO: Concatenate memory and tiled input
         # memory_aug: (batch, slots, 2*mem_size)
-        memory_aug = # YOUR CODE HERE
+        memory_aug = None  # YOUR CODE HERE
         
         # TODO: Perform Multi-Head Attention on memory_aug
         # For this exercise, you can use PyTorch's F.multi_head_attention_forward OR
@@ -75,10 +77,10 @@ class RelationalMemoryStep(nn.Module):
         # Calculate candidate using tanh(output) or tanh(m_attended)
         # Update memory
         
-        f_gate = # YOUR CODE HERE
-        i_gate = # YOUR CODE HERE
+        f_gate = None  # YOUR CODE HERE
+        i_gate = None  # YOUR CODE HERE
         
-        next_memory = # YOUR CODE HERE
+        next_memory = None  # YOUR CODE HERE
         
         return next_memory
 

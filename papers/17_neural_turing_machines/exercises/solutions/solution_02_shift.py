@@ -31,10 +31,14 @@ def circular_shift(w, s):
     # s[1] -> shift 0
     # s[2] -> shift +1
     
+    # [PATCH 2026-10-18] two fixes: (1) roll directions swapped so s[:, 2] (shift +1) takes w[i-1] into slot i,
+    # as Eq 8 and this file's own test require (focus 5 -> 6); before, it moved 5 -> 4 and the assert failed.
+    # (2) s[:, k:k+1] keeps a [batch, 1] column; s[:, k] is [batch] and broadcast along N (crash for batch=3,
+    # silently wrong when batch == N).
     w_s = (
-        s[:, 0] * torch.roll(w, shifts=1, dims=1) +
-        s[:, 1] * w +
-        s[:, 2] * torch.roll(w, shifts=-1, dims=1)
+        s[:, 0:1] * torch.roll(w, shifts=-1, dims=1) +
+        s[:, 1:2] * w +
+        s[:, 2:3] * torch.roll(w, shifts=1, dims=1)
     )
     
     return w_s

@@ -5,7 +5,9 @@ In this exercise, you will act as an OpenAI researcher in early 2020.
 You have trained several small models (1M to 100M params) and have a fitted
 scaling law. Your task is to predict the loss of a 175B parameter model.
 
-Scaling Law: L(N) = 1.69 * N^-0.076
+Scaling Law: L(N) = (N_c / N)^0.076 with N_c = 8.8e13 (Kaplan et al. 2020, Eq. 1.1)
+[PATCH 2026-10-18] was "L(N) = 1.69 * N^-0.076", which is not in the paper (1.69 is Chinchilla's
+irreducible-loss fit E) and predicts 0.24 nats for GPT-3, failing this file's own 1.5-2.5 check.
 
 Instructions:
 1. Implement the predict_loss function.
@@ -14,7 +16,7 @@ Instructions:
 
 def predict_loss(n_params):
     """
-    TODO: Use the law L(N) = 1.69 * n_params^-0.076 to predict loss.
+    TODO: Use the law L(N) = (8.8e13 / n_params)^0.076 to predict loss.
     """
     # YOUR CODE HERE
     pass

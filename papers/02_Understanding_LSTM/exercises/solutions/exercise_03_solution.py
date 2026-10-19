@@ -11,7 +11,7 @@ import time
 import sys
 sys.path.append('..')
 
-from lstm_implementation import LSTM
+from implementation import LSTM  # [PATCH 2026-10-18] module 'lstm_implementation' does not exist
 
 
 # ============================================================================

@@ -138,7 +138,7 @@ def test_aspp():
     print("ASPP (Atrous Spatial Pyramid Pooling)")
     print("=" * 60)
     
-    aspp = ASPP(2048, 256)  # Typical for ResNet backbone
+    aspp = ASPP(2048, 256).eval()  # [PATCH 2026-10-18] eval(): BatchNorm in ASPP's image-pooling branch sees a 1x1 map, so batch 1 crashes in train mode
     x = torch.randn(1, 2048, 32, 32)
     y = aspp(x)
     
@@ -155,7 +155,7 @@ def test_aspp():
     
     # Test full head
     print("\nFull DeepLab head test:")
-    head = DeepLabHead(512, 21)
+    head = DeepLabHead(512, 21).eval()  # [PATCH 2026-10-18] eval(): BatchNorm in ASPP's image-pooling branch sees a 1x1 map, so batch 1 crashes in train mode
     x = torch.randn(1, 512, 64, 64)
     y = head(x)
     print(f"Input:  {list(x.shape)}")

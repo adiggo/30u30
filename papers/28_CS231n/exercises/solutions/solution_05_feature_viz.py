@@ -10,7 +10,8 @@ import numpy as np
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# [PATCH 2026-10-18] solutions/ is two levels below the day directory; two dirnames only reached exercises/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from implementation import SimpleCNN, conv_forward_im2col, relu
 
 

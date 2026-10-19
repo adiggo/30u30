@@ -13,8 +13,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+import os
 import sys
-sys.path.append('..')
+# [PATCH 2026-10-18] was sys.path.append('..'), which resolves against the *current
+# directory*: run from the day folder (or from solutions/) the import of
+# implementation.py failed with ModuleNotFoundError. Resolve relative to this file.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from implementation import PointerNetwork
 
 

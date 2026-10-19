@@ -233,8 +233,15 @@ class ReadProcessWrite(nn.Module):
 
 
 def compute_loss(log_probs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    target_log_probs = log_probs.gather(1, targets)
-    return -target_log_probs.mean()
+    # [PATCH 2026-10-18] PointerNetwork.forward already returns, per step, the
+    # log-probability of the pointer it was fed (the target under teacher
+    # forcing): log_probs is (batch, steps), not (batch, steps, set_size). The
+    # original `log_probs.gather(1, targets)` re-indexed the *step* axis by
+    # pointer values; that only equals the NLL when every target row is a
+    # permutation of 0..steps-1 (sorting, TSP) and is wrong otherwise (e.g.
+    # padded convex-hull labels). `targets` is kept for API compatibility; call
+    # this on a teacher-forced pass.
+    return -log_probs.mean()
 
 
 def accuracy(pointers: torch.Tensor, targets: torch.Tensor) -> float:

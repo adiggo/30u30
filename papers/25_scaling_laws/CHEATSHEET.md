@@ -126,10 +126,10 @@ print(f"Power-law exponent (alpha): {fitter.alpha}")
 ## Resources
 
 - **Original Paper**: [Kaplan et al. (2020)](https://arxiv.org/abs/2001.08361)
-- **DeepMind Refinement**: [Hoffmann et al. (2022)](../26_chinchilla/)
+- **DeepMind Refinement**: [Hoffmann et al. (2022)](https://arxiv.org/abs/2203.15556)
 - **Implementation**: `implementation.py`
 - **Dashboard**: `visualization.py`
 
 ---
 
-**Next Up:** [Chinchilla Scaling Laws](../26_chinchilla/)
+**Next Up:** [Day 26: Kolmogorov Complexity](../26_kolmogorov_complexity/)

@@ -87,7 +87,9 @@ def analyze_results(data):
               f"Final={final:.1f}")
         if is_monotone:
             print(f"    --> MONOTONE (no hump)")
-        elif peak > initial and peak > final:
+        # [PATCH 2026-10-18] "peak > final" called a 1-byte end-of-run dip a hump; require an
+        # interior peak and a fall at least halfway back toward the initial value.
+        elif 0 < peak_idx < len(arr) - 1 and final <= initial + 0.5 * (peak - initial):
             ratio = peak / max(initial, 0.001)
             print(f"    --> HUMP detected (peak/initial = {ratio:.2f}x)")
         else:
@@ -163,7 +165,9 @@ if __name__ == "__main__":
 
     print("Conclusions:")
     print("- Entropy is monotone (no hump) -- as expected")
-    print("- gzip, coarse KC, and sophistication proxy all show the hump")
+    # [PATCH 2026-10-18] this line was hard-coded and contradicted the analysis above
+    print("- gzip of the fine grid tracks entropy; 256-level coarse KC keeps equilibrium noise.")
+    print("  A clean hump needs thresholding into a few levels (Day 7, Sec. 5).")
     print("- Sophistication (Part 1) is closest to Aaronson's complextropy")
     print("- Boundary fraction also peaks, but is a geometric measure,")
     print("  not an information-theoretic one")

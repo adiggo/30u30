@@ -26,17 +26,19 @@ def generate_nth_farthest_batch(batch_size, seq_len, vector_dim, n_index=0):
         seq = inputs[i]
         
         # TODO: Identify the reference vector at n_index
-        ref_vec = # YOUR CODE HERE
+        ref_vec = None  # YOUR CODE HERE
         
         # TODO: Calculate Euclidean distance from ref_vec to all other vectors in seq
         # dists should be shape (seq_len,)
-        dists = # YOUR CODE HERE
+        dists = None  # YOUR CODE HERE
         
         # TODO: Find the index of the maximum distance
-        farthest_idx = # YOUR CODE HERE
+        farthest_idx = None  # YOUR CODE HERE
         
         # TODO: Get the target vector
-        target_vec = # YOUR CODE HERE
+        target_vec = None  # YOUR CODE HERE
+        if target_vec is None:  # [PATCH 2026-10-18] placeholders were `x = # ...` (SyntaxError); delete this guard once done
+            raise NotImplementedError("Exercise 4: fill in ref_vec, dists, farthest_idx and target_vec")
         
         targets.append(target_vec)
         

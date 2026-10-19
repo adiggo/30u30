@@ -17,9 +17,14 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 import torch
 
+import sys
+
 try:
     import matplotlib
-    matplotlib.use('Agg')
+    # [PATCH 2026-10-18] Forcing Agg on import switched a notebook's inline backend off, so
+    # figures never displayed; use Agg only outside Jupyter (scripts save PNGs either way).
+    if 'ipykernel' not in sys.modules:
+        matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     HAS_MATPLOTLIB = True

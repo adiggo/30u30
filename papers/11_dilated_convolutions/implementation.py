@@ -232,6 +232,7 @@ class DilatedResNet(nn.Module):
         
         self.output_stride = output_stride
         self.current_stride = 1
+        self.current_dilation = 1  # [PATCH 2026-10-18] running dilation, see _make_layer
         
         # Initial convolution
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -260,7 +261,10 @@ class DilatedResNet(nn.Module):
         if stride != 1 and self.current_stride * stride > self.output_stride:
             # Use dilation instead of stride to maintain resolution
             use_dilation = True
-            dilation = stride
+            # [PATCH 2026-10-18] dilation must accumulate over every removed stride (OS=8: layer3 d=2,
+            # layer4 d=4); it was reset to `stride`, so layer4 got d=2 and a smaller receptive field
+            self.current_dilation *= stride
+            dilation = self.current_dilation
             stride = 1
         else:
             self.current_stride *= stride
@@ -687,7 +691,7 @@ if __name__ == "__main__":
     
     # 3. ASPP demonstration
     print("\n3. Atrous Spatial Pyramid Pooling:")
-    aspp = AtrousSpatialPyramidPooling(512, 256)
+    aspp = AtrousSpatialPyramidPooling(512, 256).eval()  # [PATCH 2026-10-18] eval(): BatchNorm in ASPP's image-pooling branch sees a 1x1 map, so batch 1 crashes in train mode
     
     # Test with sample input
     x = torch.randn(1, 512, 32, 32)
@@ -730,7 +734,7 @@ if __name__ == "__main__":
     
     # 6. DeepLab V3 segmentation
     print("\n6. DeepLab V3 Segmentation:")
-    deeplab = create_deeplab_v3(num_classes=21)
+    deeplab = create_deeplab_v3(num_classes=21).eval()  # [PATCH 2026-10-18] eval(): BatchNorm in ASPP's image-pooling branch sees a 1x1 map, so batch 1 crashes in train mode
     
     # Test with image
     image = torch.randn(1, 3, 256, 256)

@@ -221,8 +221,36 @@ class AttentionDecoder(nn.Module):
         # Final projection includes embedding and context for stability
         combined = torch.cat([gru_output.squeeze(1), context, embedded], dim=-1)
         logits = self.output_layer(combined)
-        
+
         return logits, hidden, weights
+
+    def forward(
+        self,
+        trg: torch.Tensor,
+        hidden: torch.Tensor,
+        encoder_outputs: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Teacher-forced decoding over a whole target sequence.
+
+        [PATCH 2026-10-17] This method was missing entirely: Seq2SeqWithAttention
+        called `self.decoder(trg, ...)`, which raised NotImplementedError
+        because nn.Module has no default forward(). Mirrors the contract the
+        training loop expects: feed trg[:, t] as the previous token and emit the
+        logits for trg[:, t+1], so the output has T-1 steps and lines up with
+        trg[:, 1:] in the loss.
+
+        Returns:
+            logits: (batch, T-1, vocab_size)
+            attentions: (batch, T-1, src_len)
+        """
+        all_logits, all_weights = [], []
+        for t in range(trg.size(1) - 1):
+            logits, hidden, weights = self.forward_step(trg[:, t], hidden, encoder_outputs, src_mask)
+            all_logits.append(logits)
+            all_weights.append(weights)
+        return torch.stack(all_logits, dim=1), torch.stack(all_weights, dim=1)
 
 
 class Seq2SeqWithAttention(nn.Module):
@@ -254,10 +282,15 @@ class Seq2SeqWithAttention(nn.Module):
         src: torch.Tensor, 
         src_lengths: torch.Tensor,
         max_len: int = 50,
-        sos_idx: int = 2,
-        eos_idx: int = 3
+        sos_idx: int = 1,
+        eos_idx: int = 2
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inference via greedy decoding."""
+        # [PATCH 2026-10-18] Defaults were sos_idx=2, eos_idx=3, but every dataset in
+        # this day (train_minimal.ReversalDataset, exercises, notebook) uses PAD=0,
+        # SOS=1, EOS=2, and visualization.create_attention_analysis() calls
+        # translate() with the defaults and cuts at token 2. With the old defaults,
+        # decoding started from the training EOS token and stopped on data token 3.
         self.eval()
         src_mask = (src == self.pad_idx)
         encoder_outputs, hidden = self.encoder(src, src_lengths)

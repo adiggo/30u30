@@ -28,13 +28,13 @@ def softmax_with_temperature(logits, temperature=1.0):
 
 def generate_with_temperature(rnn, idx_to_char, seed_idx, length, temperature=1.0):
     """Generate text with specific temperature."""
-    h = np.zeros(rnn.hidden_size)
+    h = np.zeros((rnn.hidden_size, 1))  # [PATCH 2026-10-18] column vectors: 1-D h/x broadcast to (H, H)
     generated = []
     idx = seed_idx
-    
+
     for _ in range(length):
         # One-hot encode input
-        x = np.zeros(rnn.vocab_size)
+        x = np.zeros((rnn.vocab_size, 1))  # [PATCH 2026-10-18] see above
         x[idx] = 1
         
         # Forward pass (single step)
@@ -45,7 +45,7 @@ def generate_with_temperature(rnn, idx_to_char, seed_idx, length, temperature=1.
         probs = softmax_with_temperature(y, temperature)
         
         # Sample next character
-        idx = np.random.choice(range(len(probs)), p=probs)
+        idx = np.random.choice(range(len(probs)), p=probs.ravel())  # [PATCH 2026-10-18] p must be 1-D
         generated.append(idx_to_char[idx])
     
     return ''.join(generated)

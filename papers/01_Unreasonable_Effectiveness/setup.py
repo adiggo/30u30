@@ -75,9 +75,11 @@ def run_quick_test():
         import numpy as np
         inputs = [0, 1, 2, 3, 4]
         targets = [1, 2, 3, 4, 0]
-        h = np.zeros(8)
-        
-        loss = rnn.forward(inputs, targets, h)
+        h = np.zeros((8, 1))  # [PATCH 2026-10-18] CharRNN expects a (hidden_size, 1) column state
+
+        # [PATCH 2026-10-18] forward(inputs, hprev) returns (xs, hs, ys, ps); the loss needs targets
+        _, _, _, ps = rnn.forward(inputs, h)
+        loss = rnn.loss(ps, targets)
         
         if loss > 0:
             print(f"RNN test passed (loss: {loss:.4f})")

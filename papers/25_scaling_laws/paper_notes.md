@@ -87,4 +87,4 @@ While revolutionary, the Kaplan paper has specific boundaries that are often mis
 
 ---
 
-**Further Reading:** [Chinchilla Scaling Laws (DeepMind)](../26_chinchilla/) - A refinement of the scaling laws for compute-optimality.
+**Further Reading:** [Chinchilla Scaling Laws (DeepMind)](https://arxiv.org/abs/2203.15556) - A refinement of the scaling laws for compute-optimality.

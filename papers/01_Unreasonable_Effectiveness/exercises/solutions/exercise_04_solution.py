@@ -29,20 +29,24 @@ def train_with_logging(rnn, data, char_to_idx, epochs=100, seq_length=25, learni
         grad_norm_sum = 0
         
         # Reset hidden state at start of epoch
-        h = np.zeros(rnn.hidden_size)
-        
+        h = np.zeros((rnn.hidden_size, 1))  # [PATCH 2026-10-18] column state, as CharRNN expects
+
         # Process data in sequences
         for i in range(0, len(data) - seq_length, seq_length):
             # Get sequence
             inputs = [char_to_idx[ch] for ch in data[i:i+seq_length]]
             targets = [char_to_idx[ch] for ch in data[i+1:i+seq_length+1]]
-            
+
             # Forward pass
-            loss, h = rnn.forward(inputs, targets, h)
+            # [PATCH 2026-10-18] use implementation.CharRNN's API: forward(inputs, hprev) returns
+            # (xs, hs, ys, ps), loss() is the per-character mean, backward() returns a 5-tuple.
+            xs, hs, ys, ps = rnn.forward(inputs, h)
+            loss = rnn.loss(ps, targets)
+            h = hs[len(inputs) - 1]
             total_loss += loss
-            
+
             # Backward pass
-            grads = rnn.backward()
+            grads = dict(zip(['dWxh', 'dWhh', 'dWhy', 'dbh', 'dby'], rnn.backward(xs, hs, ps, targets)))
             
             # Update parameters
             for param_name in ['Wxh', 'Whh', 'Why', 'bh', 'by']:

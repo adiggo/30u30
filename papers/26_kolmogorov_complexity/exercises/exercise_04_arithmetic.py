@@ -15,8 +15,10 @@ import numpy as np
 from collections import Counter
 
 def get_probabilities(text):
-    freqs = Counter(test_str)
-    total = len(test_str)
+    # [PATCH 2026-10-18] used the global `test_str` instead of the `text` argument
+    # (NameError when imported; wrong probabilities for any other input)
+    freqs = Counter(text)
+    total = len(text)
     probs = {}
     cumulative = 0.0
     for char in sorted(freqs.keys()):

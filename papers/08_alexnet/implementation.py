@@ -148,7 +148,14 @@ class AlexNet(nn.Module):
         return x
     
     def _initialize_weights(self):
-        """Initialize weights as in the original paper."""
+        """Initialize weights as in the original paper (Sec. 5): N(0, 0.01).
+
+        [PATCH 2026-10-18] Biases differ from the paper: it sets the biases of conv2, conv4, conv5 and the
+        two fully-connected hidden layers to 1 ("to accelerate the early stages of learning by providing
+        the ReLUs with positive inputs") and the rest to 0; here every bias is 0. Switching to the
+        paper's values made the first SGD steps diverge (loss 15-38) in short CPU runs at lr 0.01, so the
+        validated behaviour is kept and the difference documented.
+        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 # Gaussian initialization with std=0.01
@@ -295,8 +302,8 @@ class AlexNetTrainer:
             self.optimizer, 
             mode='min', 
             factor=0.1, 
-            patience=5,
-            verbose=True
+            patience=5
+            # [PATCH 2026-10-18] removed verbose=True: ReduceLROnPlateau no longer accepts it (TypeError on PyTorch >= 2.7)
         )
         
         # Training history

@@ -6,6 +6,8 @@ Solution for Exercise 2
 
 from collections import Counter
 import numpy as np
+import os, sys  # [PATCH 2026-10-18] make `implementation` importable when run as a script
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from implementation import HuffmanCoder, ComplexityMetrics
 
 def analyze_bitrate(text):

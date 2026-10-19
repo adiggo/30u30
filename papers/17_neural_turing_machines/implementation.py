@@ -121,16 +121,22 @@ class NTMHead(nn.Module):
         w_s = torch.zeros_like(w_g)
         for i in range(self.N):
             # Circular shift: s[-1]*w[i+1] + s[0]*w[i] + s[1]*w[i-1]
+            # [PATCH 2026-10-18] roll directions swapped: torch.roll(w, -1)[i] = w[i+1] belongs to shift -1 (s[:, 0])
+            # and torch.roll(w, 1)[i] = w[i-1] to shift +1 (s[:, 2]), as in Eq 8. Before, the code computed the
+            # mirror image, so s[:, 2] moved the focus from i to i-1, contradicting the comments and Exercise 2.
             w_s[:, i] = (
-                s[:, 0] * torch.roll(w_g, shifts=1, dims=1)[:, i] +
+                s[:, 0] * torch.roll(w_g, shifts=-1, dims=1)[:, i] +
                 s[:, 1] * w_g[:, i] +
-                s[:, 2] * torch.roll(w_g, shifts=-1, dims=1)[:, i]
+                s[:, 2] * torch.roll(w_g, shifts=1, dims=1)[:, i]
             )
 
         # 4. Sharpening (Eq 9)
         # Without sharpening, the focus becomes more blurry at every shift step.
         # Sharpening "peaks" the distribution to maintain focus.
-        w_pow = w_s ** gamma
+        # [PATCH 2026-10-18] divide by the row max before the power. Eq 9 is scale-invariant, so the result is the
+        # same, but the sum is now >= 1 and the 1e-8 can no longer swamp it. Before, a diffuse weighting with a large
+        # gamma (uniform over N=128, gamma=5) came out summing to 0.27 instead of 1 (Eq 1), and to ~0 for gamma >= 8.
+        w_pow = (w_s / (w_s.max(dim=1, keepdim=True)[0] + 1e-12)) ** gamma
         w = w_pow / (w_pow.sum(dim=1, keepdim=True) + 1e-8)
 
         return w, erase, add

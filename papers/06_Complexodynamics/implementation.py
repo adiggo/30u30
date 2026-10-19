@@ -717,10 +717,17 @@ def summarize_results(results: Dict) -> str:
         f"  then falls to {gzip_vals[-1]} bytes.",
     ]
 
-    if peak_val > gzip_vals[0] and peak_val > gzip_vals[-1]:
+    # [PATCH 2026-10-18] "peak > final" alone reported a hump for a 1% end-of-run dip
+    # (runner: 39 -> 681 -> 672 bytes, peak at 97% of the run). Require an interior peak
+    # and a fall at least halfway back. gzip of the FINE grid is the entropy estimate in
+    # the Day 7 paper (Sec. 5.1): it rises and plateaus; the hump needs coarse-graining
+    # plus thresholding into a few levels.
+    falls_back = gzip_vals[-1] <= gzip_vals[0] + 0.5 * (peak_val - gzip_vals[0])
+    if 0 < peak_idx < len(gzip_vals) - 1 and falls_back:
         lines.append("  [OK] Characteristic complexity hump observed.")
     else:
-        lines.append("  [NOTE] Hump not clearly visible. Try more steps or larger grid.")
+        lines.append("  [NOTE] No hump: gzip of the fine grid tracks entropy (rises, then plateaus).")
+        lines.append("         A hump needs coarse-graining + thresholding (see Day 7).")
 
     lines.append("=" * 60)
     return "\n".join(lines)

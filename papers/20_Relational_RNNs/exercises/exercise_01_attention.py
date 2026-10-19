@@ -20,16 +20,18 @@ def scaled_dot_product_attention(q, k, v, mask=None):
     
     # TODO: Calculate attention scores
     # Hint: matmul(q, k.transpose(-2, -1)) / sqrt(d_k)
-    scores = # YOUR CODE HERE
+    scores = None  # YOUR CODE HERE
     
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
         
     # TODO: Apply softmax
-    attn_weights = # YOUR CODE HERE
+    attn_weights = None  # YOUR CODE HERE
     
     # TODO: Weighted sum of values
-    output = # YOUR CODE HERE
+    output = None  # YOUR CODE HERE
+    if output is None:  # [PATCH 2026-10-18] placeholders were `x = # ...` (SyntaxError); delete this guard once done
+        raise NotImplementedError("Exercise 1: fill in scores, attn_weights and output")
     
     return output, attn_weights
 

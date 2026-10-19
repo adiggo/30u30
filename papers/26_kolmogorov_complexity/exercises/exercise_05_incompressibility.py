@@ -13,6 +13,8 @@ cannot be compressed by more than 5% by any of our coders.
 
 import random
 import string
+import os, sys  # [PATCH 2026-10-18] make `implementation` importable when run as a script
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from implementation import HuffmanCoder
 
 def create_incompressible_string(length=100):

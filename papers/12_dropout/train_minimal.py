@@ -34,7 +34,13 @@ def load_mnist(data_dir: str = 'data') -> Tuple[np.ndarray, np.ndarray, np.ndarr
         X_train, y_train, X_test, y_test
     """
     mnist_path = os.path.join(data_dir, 'mnist.npz')
-    
+    # [PATCH 2026-10-18] solutions 02/04/05 call load_mnist() from exercises/solutions/ (as the solutions README
+    # says to run them); a cwd-relative 'data' then misses the cached file and fell through to synthetic data.
+    if not os.path.exists(mnist_path) and not os.path.isabs(data_dir):
+        script_relative = os.path.join(os.path.dirname(os.path.abspath(__file__)), data_dir, 'mnist.npz')
+        if os.path.exists(script_relative):
+            mnist_path = script_relative
+
     if os.path.exists(mnist_path):
         data = np.load(mnist_path)
         return data['X_train'], data['y_train'], data['X_test'], data['y_test']
@@ -81,7 +87,13 @@ def load_mnist(data_dir: str = 'data') -> Tuple[np.ndarray, np.ndarray, np.ndarr
     except Exception as e:
         print(f"Could not download MNIST: {e}")
         print("Generating synthetic data...")
-        
+        # [PATCH 2026-10-18] make the fallback impossible to miss: every accuracy printed after this is on
+        # random inputs with random labels (chance = 10%), not MNIST
+        import sys
+        print("\n" + "!" * 72 + "\nWARNING: MNIST NOT AVAILABLE -> USING SYNTHETIC RANDOM DATA (random labels).\n"
+              "All accuracies/gaps below are meaningless for dropout; place mnist.npz in "
+              f"{os.path.abspath(data_dir)}\n" + "!" * 72 + "\n", file=sys.stderr, flush=True)
+
         # Generate synthetic data
         np.random.seed(42)
         X_train = np.random.randn(10000, 784).astype(np.float32)
