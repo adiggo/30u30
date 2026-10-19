@@ -1,6 +1,10 @@
 """Day 03: run every exercise file's own test functions with the reference solution swapped in
 (and, for exercises 1-2, with the repo's implementation.py functions too).
 
+[2026-10-18] Exercise 5's pipeline now trains the paper's LSTM language model on a Penn Treebank
+slice, so this script needs PTB: set $PTB_DIR to a folder with ptb.{train,valid,test}.txt, or
+train_minimal.load_ptb downloads it (~6 MB) into the day's data/ptb/.
+
 Run:  OMP_NUM_THREADS=1 python validation/day03_exercise_tests.py
 """
 import importlib.util
@@ -117,11 +121,14 @@ for n in ['RegularizedRNNCell', 'EarlyStopping', 'train_regularized_rnn']:
 run_tests('ex05 tests + solution pipeline', e5,
           ['test_rnn_cell_initialization', 'test_layer_norm', 'test_dropout', 'test_forward_pass',
            'test_l2_penalty', 'test_weight_save_restore', 'test_full_pipeline'])
-np.random.seed(0)
-cell = s5.RegularizedRNNCell(3, 8, dropout_rate=0.2)
-w0 = {k: v.copy() for k, v in cell.get_weights().items()}
+# [PATCH 2026-10-18] the solution's loop now trains LSTMLanguageModel (it used to compute losses only)
+tr5, va5, v5 = s5.load_ptb_slice(n_train=6000, n_valid=3000)
+lm5 = s5.LSTMLanguageModel(v5, hidden_size=32, num_layers=2, keep_prob=0.8, init_scale=0.1, seed=0)
+w0 = lm5.get_state()
+ppl0 = s5.evaluate(lm5, va5, 10, 20)
 with redirect_stdout(io.StringIO()):
-    s5.train_regularized_rnn(cell, [np.random.randn(5, 3)] * 4, [np.random.randn(1, 8)] * 4,
-                             [np.random.randn(5, 3)] * 2, [np.random.randn(1, 8)] * 2, max_epochs=3)
-same = all(np.array_equal(w0[k], v) for k, v in cell.get_weights().items())
-print('  ex05 solution train_regularized_rnn updates weights: %s' % ('NO (forward + loss only)' if same else 'yes'))
+    h5 = s5.train_regularized_rnn(lm5, s5.batchify(tr5, 10), va5, max_epochs=2, weight_decay=1e-5)
+n_changed = sum(not np.array_equal(w0[k], lm5.params[k]) for k in w0)
+print('  ex05 solution train_regularized_rnn updates weights: %s (%d/%d arrays changed; validation '
+      'perplexity %.0f -> %.0f on a 6k-word PTB slice)' % ('yes' if n_changed == len(w0) else 'NO', n_changed,
+                                                         len(w0), ppl0, np.exp(min(h5['val_loss']))))
