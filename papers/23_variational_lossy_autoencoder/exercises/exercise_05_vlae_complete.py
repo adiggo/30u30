@@ -25,6 +25,14 @@ def train_vlae():
     1. Use VLAE with use_flow=True.
     2. Use PixelCNNDecoder with restricted receptive field (e.g. small kernels).
     3. Train and verify that KL > 0 (e.g. around 10-20 nats for MNIST).
+
+    [PATCH 2026-10-18] Train with free bits, as the paper does (App. A: 0.01 nats per pixel;
+    implementation.free_bits_loss): with the plain ELBO (loss_function) the KL falls to ~1 nat or
+    less within 100 batches. KL > 0 is not enough on its own: free bits can be "spent" on
+    shrinking sigma without encoding anything. Check that z is used with
+    implementation.latent_usage (-log p(x|z) with each image's own z vs another image's z, and
+    I(x; z)). The paper's converged model uses 13.3 nats on static MNIST (Sec. 4.1); a few
+    hundred CPU batches get far less.
     """
     # YOUR CODE HERE
     raise NotImplementedError("Implement full VLAE training")
