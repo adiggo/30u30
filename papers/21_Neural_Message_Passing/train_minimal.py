@@ -5,7 +5,7 @@ Train a Message Passing Neural Network on synthetic molecular data.
 Based on Gilmer et al. 2017, "Neural Message Passing for Quantum Chemistry".
 
 Usage:
-    # Default training (edge network + Set2Set, 50 epochs)
+    # Default training (edge network + sum readout, 50 epochs, ~30 s on one CPU core)
     python train_minimal.py
 
     # Quick test (2 epochs)
@@ -17,13 +17,20 @@ Usage:
     # Compare message function variants
     python train_minimal.py --compare-messages
 
-    # Use simple sum readout instead of Set2Set
-    python train_minimal.py --readout sum
+    # The paper's QM9 readout, set2set (Sec. 5.3), instead of the sum readout
+    python train_minimal.py --readout set2set
+
+[PATCH 2026-10-18] The default readout is now 'sum'. The synthetic target is
+extensive (a sum of per-atom contributions plus a term per bond), and set2set's
+attention read is a weighted AVERAGE of node vectors (its weights sum to 1), which
+cannot represent a total by itself: on this data set2set reached test MAE ~2.2
+(mean of 3 seeds; predicting the mean: 2.98) against ~0.2 for the sum readout
+(validation/day21_readout_fix.py).
 
 References:
     Section 2: MPNN framework (message passing + readout)
     Section 4: Variants explored (edge network, Set2Set, virtual edges)
-    Section 6, Table 2: Results on QM9
+    Section 8, Table 2: Results on QM9
 """
 
 import argparse
@@ -54,21 +61,23 @@ def parse_args():
     parser.add_argument('--hidden-dim', type=int, default=64,
                         help='Node embedding dimension (paper uses 200, we default to 64)')
     parser.add_argument('--n-messages', type=int, default=3,
-                        help='Number of message passing rounds T (paper uses 6)')
+                        help='Number of message passing rounds T (paper: random search over 3-8)')
     parser.add_argument('--message-type', type=str, default='edge_network',
                         choices=['simple', 'matrix', 'edge_network'],
                         help='Message function variant (Section 3-4)')
-    parser.add_argument('--readout', type=str, default='set2set',
+    # [PATCH 2026-10-18] default 'sum' (was 'set2set'): see the module docstring
+    parser.add_argument('--readout', type=str, default='sum',
                         choices=['sum', 'set2set'],
-                        help='Readout function (Section 4.3)')
+                        help="Readout function. 'sum' (default) suits this extensive synthetic target; "
+                             "'set2set' is the paper's QM9 readout (Section 5.3)")
     parser.add_argument('--set2set-steps', type=int, default=6,
-                        help='Set2Set processing steps M (paper uses 6)')
+                        help='Set2Set processing steps M (paper: random search over 1-12)')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=1e-3,
-                        help='Learning rate (paper uses 1e-4 with Adam)')
+                        help='Learning rate (paper: Adam, initial lr drawn from 1e-5 to 5e-4, linear decay)')
     parser.add_argument('--batch-size', type=int, default=32,
                         help='Batch size (paper uses 20)')
     parser.add_argument('--n-molecules', type=int, default=500,
@@ -207,9 +216,11 @@ def run_compare_messages(args):
     for msg_type, result in results.items():
         print(f"  {msg_type:15s}: MAE = {result['final_mae']:.4f}")
     print()
-    print("Note: On real QM9 data, edge_network consistently outperforms")
-    print("the other variants (Table 2). On synthetic data, differences")
-    print("may be less pronounced.")
+    # [PATCH 2026-10-18] the paper does not rank all three on QM9 (Table 2 compares its best model with
+    # earlier methods); it reports the edge network beating the pair message on 11 of 13 targets.
+    print("Note: the paper's best QM9 model uses the edge network (Section 8); in its joint-training")
+    print("comparison the edge network beat the pair message on 11 of 13 targets (supplementary")
+    print("Table 9). On this small synthetic set the ranking can differ.")
 
     # Save comparison plot if matplotlib available
     try:

@@ -118,17 +118,18 @@ class NTMHead(nn.Module):
         # 3. Convolutional Shift (Eq 8)
         # Performs circular convolution to allow relative movement.
         # Necessary for iterating through sequences (the Copy Task).
-        w_s = torch.zeros_like(w_g)
-        for i in range(self.N):
-            # Circular shift: s[-1]*w[i+1] + s[0]*w[i] + s[1]*w[i-1]
-            # [PATCH 2026-10-18] roll directions swapped: torch.roll(w, -1)[i] = w[i+1] belongs to shift -1 (s[:, 0])
-            # and torch.roll(w, 1)[i] = w[i-1] to shift +1 (s[:, 2]), as in Eq 8. Before, the code computed the
-            # mirror image, so s[:, 2] moved the focus from i to i-1, contradicting the comments and Exercise 2.
-            w_s[:, i] = (
-                s[:, 0] * torch.roll(w_g, shifts=-1, dims=1)[:, i] +
-                s[:, 1] * w_g[:, i] +
-                s[:, 2] * torch.roll(w_g, shifts=1, dims=1)[:, i]
-            )
+        # Eq 8 with shifts {-1, 0, +1}: w_s(i) = s(-1) w_g(i+1) + s(0) w_g(i) + s(+1) w_g(i-1), indices mod N.
+        # torch.roll(w, -1, dims=1)[:, i] = w[:, i+1] (shift -1) and torch.roll(w, 1, dims=1)[:, i] = w[:, i-1]
+        # (shift +1), wrapping around at the ends; s[:, k:k+1] keeps a (B, 1) column that broadcasts over the N slots.
+        # [PATCH 2026-10-18] One vectorized expression instead of a Python loop over the N slots that re-rolled the
+        # whole (B, N) weighting twice per slot (2N rolls per head per time step, O(N^2)); same arithmetic in the same
+        # order, so the result is identical. The loop was ~90% of a training step; an iteration at length 10 went from
+        # ~1.06 s to ~0.08 s (validation/day17_vectorized_shift.py).
+        # (Earlier patch, same date: roll directions swapped so that s[:, 2] = shift +1 moves the focus from i to i+1,
+        # as Eq 8 and Exercise 2 require; before, the code computed the mirror image.)
+        w_s = (s[:, 0:1] * torch.roll(w_g, shifts=-1, dims=1) +
+               s[:, 1:2] * w_g +
+               s[:, 2:3] * torch.roll(w_g, shifts=1, dims=1))
 
         # 4. Sharpening (Eq 9)
         # Without sharpening, the focus becomes more blurry at every shift step.

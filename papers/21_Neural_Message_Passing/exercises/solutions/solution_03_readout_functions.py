@@ -37,7 +37,12 @@ class SumReadout(nn.Module):
 
 
 class Set2SetReadout(nn.Module):
-    """Set2Set readout — Section 4.3, from Vinyals et al. 2015."""
+    """Set2Set readout — Section 5.3, from Vinyals et al. 2016 (Eqs. 3-7).
+
+    [PATCH 2026-10-18] Vinyals' order: q_t = LSTM(q*_{t-1}), then attend with q_t,
+    q*_t = [q_t ; r_t], output MLP(q*_M). (Before: attend with the previous state
+    first, then LSTM([h, r]).)
+    """
     def __init__(self, hidden_dim: int, output_dim: int, processing_steps: int = 6):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -51,21 +56,21 @@ class Set2SetReadout(nn.Module):
 
     def forward(self, node_embeddings, batch_indices):
         n_graphs = batch_indices.max().item() + 1
-        device = node_embeddings.device
+        x = node_embeddings
 
-        h = torch.zeros(n_graphs, self.hidden_dim, device=device)
-        c = torch.zeros(n_graphs, self.hidden_dim, device=device)
-        r = torch.zeros(n_graphs, self.hidden_dim, device=device)
+        q_star = x.new_zeros(n_graphs, 2 * self.hidden_dim)   # q*_0 = 0
+        h = x.new_zeros(n_graphs, self.hidden_dim)             # LSTM state = query
+        c = x.new_zeros(n_graphs, self.hidden_dim)
 
         for _ in range(self.processing_steps):
-            # Expand query to per-node
-            q = h[batch_indices]  # (total_nodes, d)
+            # q_t = LSTM(q*_{t-1})
+            h, c = self.lstm(q_star, (h, c))
 
-            # Attention logits
-            e = (node_embeddings * q).sum(dim=-1)  # (total_nodes,)
+            # Attention logits: each node against its own graph's query
+            e = (x * h[batch_indices]).sum(dim=-1)  # (total_nodes,)
 
             # Per-graph softmax (numerically stable)
-            max_vals = torch.zeros(n_graphs, device=device)
+            max_vals = x.new_zeros(n_graphs)
             max_vals.scatter_reduce_(
                 0, batch_indices, e, reduce='amax', include_self=False
             )
@@ -76,19 +81,16 @@ class Set2SetReadout(nn.Module):
             ).squeeze(-1)
             a = exp_e / (sum_exp[batch_indices] + 1e-16)  # (total_nodes,)
 
-            # Weighted sum per graph
+            # Weighted sum per graph (an average: the weights of a graph sum to 1)
             r = scatter_sum(
-                a.unsqueeze(-1) * node_embeddings,
+                a.unsqueeze(-1) * x,
                 batch_indices,
                 dim_size=n_graphs
             )
 
-            # LSTM update
-            lstm_input = torch.cat([h, r], dim=-1)
-            h, c = self.lstm(lstm_input, (h, c))
+            q_star = torch.cat([h, r], dim=-1)  # q*_t = [q_t ; r_t]
 
-        graph_emb = torch.cat([h, r], dim=-1)
-        return self.mlp(graph_emb)
+        return self.mlp(q_star)
 
 
 if __name__ == '__main__':

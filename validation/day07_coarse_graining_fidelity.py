@@ -8,6 +8,9 @@ and gzip the thresholded array.
 
 The repo's implementation.coarse_grain instead averages NON-overlapping g x g blocks, giving
 an (n//g) x (n//g) array (10 x 10 for the default g = n//10, whatever n is).
+[PATCH 2026-10-18] implementation.coarse_grain now defaults to the paper's window; "repo" below
+means its earlier block method, coarse_grain(..., method="block"). See day07_paper_experiments.py
+for the re-run with the window method in the library.
 
 Compared here (interacting dynamics = patched, particle-conserving code):
   1. hump shape for the interacting model,
@@ -42,7 +45,7 @@ def box_filter_centered(grid, g):
     return tot / cnt
 
 def complexity(grid, method, g, buckets, adjust):
-    coarse = impl.coarse_grain(grid, g) if method == "repo" else box_filter_centered(grid, g)
+    coarse = impl.coarse_grain(grid, g, method="block") if method == "repo" else box_filter_centered(grid, g)
     d = impl.threshold_array(np.clip(coarse, 0, 1), buckets)
     if adjust:
         d = impl.row_majority_adjust(d)

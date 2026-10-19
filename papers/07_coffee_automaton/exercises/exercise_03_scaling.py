@@ -9,10 +9,17 @@ The paper found:
   - Time to max complexity ~ n^2 (quadratic)
 
 Your task:
-  1. Run the interacting model at multiple grid sizes
+  1. Run the interacting model at multiple grid sizes, measuring complexity
+     with the Sec. 5 metric (centred-window coarse-graining, ONE grain size
+     for every n, 3 buckets, no adjustment)
   2. Record max entropy, max complexity, and time to peak
   3. Fit curves and check the scaling exponents
   4. Plot your results
+
+[PATCH 2026-10-18] With the old block averaging (and g = n // 10) the coarse
+array was 10 x 10 at every n, so max complexity could not grow. Also compare
+the time to peak in batches with ca.swaps (the paper's unit: one swap = one
+step): a quadratic fit can look good even when the growth is closer to n^4.
 
 Paper reference: Section 5.2, Figures 6-8
 """
@@ -25,12 +32,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from implementation import run_simulation
 
 
-def scaling_experiment(sizes=None, steps_multiplier=40):
+def scaling_experiment(sizes=None, steps_multiplier=4, grain_size=7):
     """
     TODO: Run simulations at multiple grid sizes and collect scaling data.
 
     For each grid size n:
-      - Run total_steps = steps_multiplier * n^2 (so larger grids get more time)
+      - Run total_steps = steps_multiplier * n^2 batches (so larger grids get more
+        time; 4 n^2 covers the rise, the peak and the fall)
+      - Measure with run_simulation(..., grain_size=grain_size, num_buckets=3,
+        adjust=False) (Sec. 5 metric, same grain for every n)
       - Record max entropy, max complexity, time of max complexity
 
     Args:
@@ -44,7 +54,7 @@ def scaling_experiment(sizes=None, steps_multiplier=40):
         peak_time: array of times to peak complexity
     """
     if sizes is None:
-        sizes = [10, 20, 30, 50]
+        sizes = [20, 30, 40, 50]
 
     # YOUR CODE HERE
     pass
@@ -72,7 +82,7 @@ if __name__ == '__main__':
     print("This may take a few minutes for larger grid sizes.")
     print("=" * 50)
 
-    result = scaling_experiment(sizes=[10, 20, 30, 50])
+    result = scaling_experiment(sizes=[20, 30, 40, 50])
 
     if result is not None:
         sizes, max_e, max_c, peak_t = result

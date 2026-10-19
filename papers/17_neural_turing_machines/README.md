@@ -42,13 +42,15 @@ To determine where to focus, the NTM uses a four-stage process:
 ### 1. The Copy Task (Section 4.1)
 The model is shown a sequence of random bits, a delimiter, and is then asked to repeat the sequence. 
 
-- **LSTM Result:** Struggles once the sequence length exceeds the size of its hidden state.
+- **LSTM Result:** Copies well up to the training length (20) but degrades rapidly beyond it (Section 4.1, Figures 4-5).
 - **NTM Result:** Learns to increment its memory pointer as it writes, and then increment it as it reads. It generalizes to sequences much longer than those it was trained on because it learned the *algorithm* of copying, not just the data.
 
 ### 2. The Sorting Task (Section 4.5)
 The model is shown a list of vectors, each with a priority. It is then asked to output them in sorted order.
 
-- **Outcome:** The NTM learns to use its memory to store## The Architecture
+- **Outcome:** The NTM writes each vector to a location given (approximately linearly) by its priority, then reads the locations in increasing order (Section 4.5, Figure 17).
+
+## The Architecture
 
 ### 1. The Addressing Pipeline (Section 3.3.1)
 The NTM uses a four-stage process to decide where to focus its "blurry" pointer:
@@ -77,15 +79,14 @@ The NTM uses a four-stage process to decide where to focus its "blurry" pointer:
 
 When implementing an NTM, pay attention to these stability details:
 
-- **Gradient Clipping (Section 4)**: NTMs are notoriously hard to train. A clip of 10.0 is almost mandatory to prevent divergence during the circular shift operation.
+- **Gradient Clipping (Section 4.6)**: "all gradient components are clipped elementwise to the range (-10, 10)". `train_minimal.py` does exactly that (`clip_grad_value_`); the repo used to clip the global gradient *norm* at 10, a different operation that rescales the whole gradient. With the per-bit BCE loss used here, a component exceeded 10 only a handful of times, during the few hundred iterations in which the network discovers the copy procedure (gradient norms then reach ~100-300). In our runs the two clips behaved alike: both learned the task with seed 0, and with both, seed 2 destabilized after learning. The paper's clip applies to its cost *per sequence*, which is ~8L times larger than a per-bit mean; with `--loss sequence` the clip engages far more often, and seed 2 then trained stably (see Results).
 - **Numerical Stability**: Operations like sharpening ($w^\gamma$) can generate extremely large or small numbers. Use `torch.clamp` and small epsilons ($1e-8$) to prevent `NaN`.
-- **Initialization**: Initial memory and weights should be learned parameters (`nn.Parameter`), not just zeros.
+- **Initialization**: The paper resets the controller state, the previous read vectors and the memory to learned bias values at the start of every sequence (Section 4). This implementation uses fixed constants instead (registered buffers, not learned): memory 1e-6, head weightings one-hot at slot 0, controller state and read vectors zero.
 
 **Things that will bite you:**
-- **Circular Convolution**: Implementing Eq 8 correctly requires a specialized 1D convolution or a sequence of `torch.roll` operations.
+- **Circular Convolution**: Implementing Eq 8 correctly requires a specialized 1D convolution or a sequence of `torch.roll` operations: with shifts -1, 0, +1 it is three rolled copies of the weighting, weighted by s. A Python loop over the N slots (what this repo used to do) costs 2N rolls per head per time step and made a training iteration ~13x slower (about 1 s instead of 0.08 s at length 10).
 - **Softplus for Positivity**: Parameters like $\beta$ (key strength) and $\gamma$ (sharpening) must be positive. Use `1 + F.softplus(x)` to ensure stability.
 - **Memory Footprint**: A $128 \times 20$ memory bank is small, but the addressing logic (calculating scores for every slot) adds significant overhead per step.
-ry and weights are learned. In our implementation, we use learned buffers for `init_memory` and `init_w` to match this.
 
 ---
 
@@ -97,9 +98,32 @@ ry and weights are learned. In our implementation, we use learned buffers for `i
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the copy task training
-python train.py
+# Run the copy task training (paper's settings, 3,000 iterations: ~5 minutes on one CPU core)
+python train_minimal.py
+
+# The same task for 10,001 iterations (320k sequences, ~17 minutes), as the script used to run
+python train_minimal.py --paper
 ```
+
+### Results in This Repo (2026-10-18)
+
+`python train_minimal.py` uses the paper's settings (Table 2, Sections 4.1 and 4.6), batch 32, seed 0 and 3,000 iterations, and ran at 10.4 iterations/s (296 s) on one CPU core. On a fixed held-out set of lengths 1-20:
+
+| Metric | Before training | After 3,000 iterations |
+|---|---|---|
+| bit error | 50.25% | 0.67% |
+| BCE per bit | 0.694 | 0.023 |
+| cost (bits per sequence, the paper's unit) | 84.2 | 2.8 |
+
+On lengths never seen in training the bit error is 0.42% at length 30 and 0.75% at length 50: the learned procedure generalizes, as in Figure 4. With `--paper` (10,001 iterations = 320k sequences, 991 s) the same run reaches 0.00% bit error from iteration 3,500 and a cost of 0.00 bits per sequence from iteration 7,000, with 0.00% at lengths 30 and 50 too; the paper's Figure 3 shows the NTM's cost reaching ~0 within its first 1,000k sequences. Before the vectorized shift, the same script managed ~1 iteration/s (1.06 s per iteration at length 10; `validation/day17_vectorized_shift.py`) and had done ~1,150 of its 10,001 iterations after 25 minutes.
+
+Training is seed-sensitive. The held-out error sits at 30-40% for the first 1,000-1,750 iterations, then collapses within a few hundred, and a run can later destabilize. Bit error after 3,000 iterations:
+
+| Seed | Per-bit loss, clip each component (default) | Per-bit loss, clip the global norm | Cost per sequence (`--loss sequence`), clip each component |
+|---|---|---|---|
+| 0 | 0.67% | not run | 25.6% (still on the plateau) |
+| 1 | 0.00% | not run | 0.00% |
+| 2 | 18.3% (reached 3%, then destabilized) | 27.7% (reached 0.5%, then destabilized) | 0.21% |
 
 ### Exercises (in `exercises/`)
 
@@ -132,7 +156,7 @@ Solutions are in `exercises/solutions/`. Try to get stuck first.
 | File | What It Is |
 |------|------------|
 | `implementation.py` | Full NTM with controller, memory, and read/write heads |
-| `train.py` | Training script for the copy task |
+| `train_minimal.py` | Training script for the copy task (Section 4.1) |
 | `visualization.py` | Memory state and addressing weight visualizations |
 | `notebook.ipynb` | Interactive walkthrough of addressing mechanisms |
 | `exercises/` | 5 exercises with solutions |

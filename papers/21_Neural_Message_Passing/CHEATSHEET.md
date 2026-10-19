@@ -2,7 +2,7 @@
 
 ## The Big Idea (30 seconds)
 
-Several graph neural network architectures are all special cases of one framework: **Message Passing Neural Networks (MPNNs)**. Each node collects messages from neighbors, updates its state, repeat for T rounds, then aggregate all node states into a graph-level prediction. The best variant uses an edge network for messages, GRU for updates, and Set2Set for readout. On QM9 (~130k molecules), this achieves chemical accuracy on 11 of 13 quantum-chemical properties. (Gilmer et al. 2017, Sections 2 and 6)
+Several graph neural network architectures are all special cases of one framework: **Message Passing Neural Networks (MPNNs)**. Each node collects messages from neighbors, updates its state, repeat for T rounds, then aggregate all node states into a graph-level prediction. The best variant uses an edge network for messages, GRU for updates, and Set2Set for readout. On QM9 (~130k molecules), this achieves chemical accuracy on 11 of 13 quantum-chemical properties. (Gilmer et al. 2017, Sections 2 and 8)
 
 **The one picture to remember:**
 
@@ -11,7 +11,8 @@ Round t:  For each node v:
               1. COLLECT:  m_v = SUM over neighbors w of M(h_v, h_w, e_vw)
               2. UPDATE:   h_v = GRU(h_v, m_v)
           After T rounds:
-              3. READOUT:  y_hat = Set2Set({h_v for all v})
+              3. READOUT:  y_hat = R({h_v for all v})
+                           (paper's best: set2set over (h_v, x_v); repo default: sum)
 ```
 
 ---
@@ -28,6 +29,9 @@ python train_minimal.py --epochs 50 --hidden-dim 64 --n-messages 3
 # Quick training check (2 epochs)
 python train_minimal.py --epochs 2
 
+# The paper's set2set readout instead of the default sum readout
+python train_minimal.py --readout set2set
+
 # Generate visualizations
 python visualization.py
 ```
@@ -38,15 +42,15 @@ python visualization.py
 
 | Component | Variant | Description | Paper Section |
 |-----------|---------|-------------|---------------|
-| **Message** | Edge Network | $A(e_{vw}) \cdot h_w$ — NN maps edge features to matrix | 4.1 |
-| **Message** | Matrix multiply | $A_{e_{vw}} h_w$ — fixed matrix per edge type (GG-NN) | 3 |
-| **Message** | Concatenate | $f([h_v, h_w, e_{vw}])$ — NN on concatenation (IN) | 3 |
+| **Message** | Edge Network | $A(e_{vw}) \cdot h_w$ — NN maps edge features to matrix | 5.1 |
+| **Message** | Matrix multiply | $A_{e_{vw}} h_w$ — fixed matrix per edge type (GG-NN) | 2 |
+| **Message** | Concatenate | $f([h_v, h_w, e_{vw}])$ — NN on concatenation (IN) | 2 |
 | **Update** | GRU | Standard gated recurrent unit | 2 |
-| **Readout** | Sum | $\sum_v h_v^T$ — simple but loses distribution info | 3 |
-| **Readout** | Set2Set | LSTM-based attention over node embeddings | 4.3 |
-| **Structure** | Virtual edges | Latent fully-connected graph on top of real bonds | 4.2 |
-| **Structure** | Master node | Single virtual node connected to all atoms | 4.2 |
-| **Architecture** | Multi-tower | Split embedding into groups, separate message passing | 4.4 |
+| **Readout** | Sum | $\sum_v h_v^T$ — keeps totals (right for extensive targets), loses the distribution | — (repo baseline; cf. GG-NN's gated sum, Eq. 4) |
+| **Readout** | Set2Set | LSTM-based attention over projected $(h_v^T, x_v)$; reads a weighted *average* | 5.3 |
+| **Structure** | Virtual edges | Latent fully-connected graph on top of real bonds | 5.2 |
+| **Structure** | Master node | Single virtual node connected to all atoms | 5.2 |
+| **Architecture** | Multi-tower | Split embedding into groups, separate message passing | 5.4 |
 
 ---
 
@@ -54,10 +58,10 @@ python visualization.py
 
 | Parameter | Paper Value | Typical Range | What It Does | Tips |
 |-----------|------------|--------------|--------------|------|
-| `hidden_dim` (d) | 200 | 64-256 | Node embedding dimension | Edge network outputs d*d matrix — memory scales quadratically |
-| `n_messages` (T) | 6 | 3-8 | Message passing rounds | Must be >= graph diameter for full information flow |
-| `set2set_steps` (M) | 6 | 3-12 | Set2Set processing steps | More steps = more expressive readout |
-| `learning_rate` | 1e-4 | 1e-4 to 1e-3 | Adam learning rate | Paper uses 1e-4 with Adam |
+| `hidden_dim` (d) | not reported for the best model (200 in the GG-NN/towers runs) | 64-256 | Node embedding dimension | Edge network outputs d*d matrix — memory scales quadratically |
+| `n_messages` (T) | random search, 3-8 (Sec. 7) | 3-8 | Message passing rounds | Must be >= graph diameter for full information flow |
+| `set2set_steps` (M) | random search, 1-12 (Sec. 7) | 3-12 | Set2Set processing steps | More steps = more expressive readout |
+| `learning_rate` | initial lr 1e-5 to 5e-4 (random search), linear decay | 1e-4 to 1e-3 | Adam learning rate | This repo: Adam 1e-3, no decay |
 | `batch_size` | 20 | 16-64 | Graphs per batch | Larger = faster but more memory |
 | `edge_nn_layers` | 2 | 1-3 | Layers in edge network | More layers = more expressive but slower |
 
@@ -164,35 +168,34 @@ self.gru = nn.GRUCell(hidden_dim, hidden_dim)
 h_v_new = self.gru(m_v, h_v)  # m_v: aggregated messages, h_v: current state
 ```
 
-### Set2Set Readout (Section 4.3)
+### Set2Set Readout (Section 5.3; Vinyals et al. 2016, Eqs. 3-7)
 
 ```python
 class Set2Set(nn.Module):
-    def __init__(self, hidden_dim, processing_steps=6):
+    def __init__(self, hidden_dim, node_dim, processing_steps=6):
         super().__init__()
-        self.lstm = nn.LSTMCell(2 * hidden_dim, hidden_dim)
+        self.project = nn.Linear(hidden_dim + node_dim, hidden_dim)  # tuple (h_v^T, x_v) -> m_v
+        self.lstm = nn.LSTMCell(2 * hidden_dim, hidden_dim)          # input q*_{t-1}, state q_t
         self.processing_steps = processing_steps
 
-    def forward(self, node_embeddings, batch_indices):
-        # node_embeddings: (total_nodes, hidden_dim)
-        # batch_indices: (total_nodes,) — which graph each node belongs to
+    def forward(self, h, x, batch_indices):
+        # h: (total_nodes, d) final node states; x: (total_nodes, node_dim) input features
         n_graphs = batch_indices.max().item() + 1
-        h = torch.zeros(n_graphs, node_embeddings.size(1))
-        c = torch.zeros_like(h)
-
+        m = self.project(torch.cat([h, x], dim=-1))       # (total_nodes, d)
+        d = m.size(1)
+        q_star = m.new_zeros(n_graphs, 2 * d)              # q*_0 = 0
+        q, c = m.new_zeros(n_graphs, d), m.new_zeros(n_graphs, d)
         for _ in range(self.processing_steps):
-            # Attention over nodes in each graph
-            q = h  # query: (n_graphs, d)
-            q_expanded = q[batch_indices]  # (total_nodes, d)
-            e = (node_embeddings * q_expanded).sum(dim=-1)  # (total_nodes,)
-            # Softmax per graph (scatter_softmax)
-            a = scatter_softmax(e, batch_indices)  # (total_nodes,)
-            r = scatter_sum(a.unsqueeze(-1) * node_embeddings,
-                           batch_indices, dim=0)  # (n_graphs, d)
-            h, c = self.lstm(torch.cat([q, r], dim=-1), (h, c))
-
-        return torch.cat([h, r], dim=-1)  # (n_graphs, 2*d)
+            q, c = self.lstm(q_star, (q, c))               # q_t = LSTM(q*_{t-1})
+            e = (m * q[batch_indices]).sum(dim=-1)         # score of every node vs its graph's query
+            a = scatter_softmax(e, batch_indices)          # softmax within each graph
+            r = scatter_sum(a.unsqueeze(-1) * m, batch_indices, dim=0)  # weighted AVERAGE (sum a = 1)
+            q_star = torch.cat([q, r], dim=-1)             # q*_t = [q_t ; r_t]
+        return q_star                                      # (n_graphs, 2*d) -> MLP
 ```
+
+Because the attention weights of a graph sum to 1, `r` is an average: set2set alone cannot count. For an
+extensive target (a total over atoms) use a sum readout, or give the node states a way to carry size.
 
 ---
 
@@ -207,7 +210,7 @@ class Set2Set(nn.Module):
 - [ ] Edge network output reshaped to (n_edges, d, d) correctly
 - [ ] Set2Set scatter operations respect batch boundaries
 - [ ] Gradient clipping enabled (1.0 is a common default)
-- [ ] Adam optimizer with lr=1e-4
+- [ ] Adam optimizer (paper: initial lr between 1e-5 and 5e-4, linear decay)
 
 ---
 
@@ -229,7 +232,7 @@ class Set2Set(nn.Module):
 | Cv | Heat capacity | cal/mol/K | 0.050 |
 | Omega | Highest vibrational freq | cm^-1 | 10 |
 
-(From Table 2 of the paper)
+(From the paper's supplementary Table 5; Table 2 reports error ratios, i.e. MAE divided by these thresholds)
 
 ---
 
@@ -245,7 +248,7 @@ Message Function choices:
 Readout choices:
   sum:      R = SUM(h_v)            fast but loses distribution info
   gated:    R = SUM(gate(h_v) * h_v) better but still sum-based
-  Set2Set:  R = LSTM-attention       best (this paper)
+  Set2Set:  R = LSTM-attention       best on QM9 (this paper); reads an average, so it cannot count
 ```
 
 ---

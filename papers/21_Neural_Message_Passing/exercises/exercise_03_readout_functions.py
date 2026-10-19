@@ -59,13 +59,19 @@ class SumReadout(nn.Module):
 
 class Set2SetReadout(nn.Module):
     """
-    Set2Set readout (Section 4.3): attention-based aggregation.
+    Set2Set readout (Section 5.3; Vinyals et al. 2016, "Order Matters", Eqs. 3-7):
+    attention-based aggregation.
 
     Uses an LSTM to iteratively attend to different subsets of nodes.
     After processing_steps iterations, outputs [query, weighted_sum].
 
-    The paper uses 6 processing steps and reports that Set2Set consistently
-    outperforms sum pooling across all QM9 targets (Table 2).
+    The paper's best QM9 model reads out with set2set (number of steps M chosen
+    by random search over 1-12), applied to a linear projection of (h_v^T, x_v);
+    here you implement the process block on the node embeddings alone.
+    [PATCH 2026-10-18] This docstring used to say the paper reports set2set
+    "consistently outperforms sum pooling across all QM9 targets (Table 2)": the
+    paper has no such comparison. Note that the attention read is a weighted
+    AVERAGE (weights sum to 1), so set2set alone cannot count nodes.
     """
     def __init__(
         self,
@@ -93,15 +99,18 @@ class Set2SetReadout(nn.Module):
         Returns:
             (n_graphs, output_dim) — one prediction per graph
 
-        Algorithm (from Vinyals et al. 2015, used in Section 4.3):
-            1. Initialize h, c = zeros(n_graphs, hidden_dim)
+        Algorithm (Vinyals et al. 2016, Eqs. 3-7; used in Section 5.3):
+            1. Initialize q_star = zeros(n_graphs, 2 * hidden_dim) and
+               h, c = zeros(n_graphs, hidden_dim)
             2. For each processing step:
-               a. q = h (current query)
-               b. e_i = dot(q[batch[i]], node_embeddings[i]) for all nodes
+               a. h, c = LSTM(q_star, (h, c))   # q_t = LSTM(q*_{t-1}); h is the query
+               b. e_i = dot(h[batch[i]], node_embeddings[i]) for all nodes
                c. a_i = softmax(e_i) per graph (attention weights)
                d. r = sum(a_i * node_embeddings[i]) per graph (weighted sum)
-               e. h, c = LSTM([q, r], (h, c))
-            3. Return MLP(cat(h, r))
+               e. q_star = cat(h, r)            # q*_t = [q_t ; r_t]
+            3. Return MLP(q_star)
+            [PATCH 2026-10-18] order fixed: the LSTM step comes first, then attention
+            with the new query (before, it attended with the previous state).
         """
         # TODO: Implement Set2Set readout
         # This is the hardest part of the exercises. Follow the algorithm above.

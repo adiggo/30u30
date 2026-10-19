@@ -8,7 +8,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from implementation import (
-    CoffeeAutomaton, coarse_grain, threshold_array, gzip_size, grid_to_bytes
+    CoffeeAutomaton, coarse_grain, threshold_array, gzip_size, grid_to_bytes,
+    default_total_steps
 )
 
 
@@ -41,29 +42,45 @@ if __name__ == '__main__':
     print("=" * 50)
 
     grid_size = 50
-    total_steps = 50000
     num_snapshots = 50
+    grain = 7
 
+    peaks = {}
     for model in ['interacting', 'non_interacting']:
         print(f"\n{model.replace('_', '-').title()} model:")
 
         ca = CoffeeAutomaton(grid_size, model, seed=42)
-        steps_per = total_steps // num_snapshots
+        # [PATCH 2026-10-18] each model's own time unit (was 50,000 steps for both, which
+        # put the non-interacting peak, at ~200-400 steps, before the first snapshot)
+        steps_per = default_total_steps(grid_size, model) // num_snapshots
 
         cx_3bucket = []
         cx_7adjusted = []
 
         for i in range(num_snapshots):
             ca.step(steps_per)
-            grid = ca.get_binary_grid()
+            grid = ca.get_state()   # [PATCH 2026-10-18] counts for the non-interacting model
 
-            c3 = measure_with_method(grid, grain_size=5, num_buckets=3, use_adjustment=False)
-            c7 = measure_with_method(grid, grain_size=5, num_buckets=7, use_adjustment=True)
+            c3 = measure_with_method(grid, grain_size=grain, num_buckets=3, use_adjustment=False)
+            c7 = measure_with_method(grid, grain_size=grain, num_buckets=7, use_adjustment=True)
 
             cx_3bucket.append(c3)
             cx_7adjusted.append(c7)
 
         print(f"  3-bucket peak: {max(cx_3bucket)}")
-        print(f"  7-bucket adjusted peak: {max(cx_7adjusted)}")
+        print(f"  7-bucket adjusted peak: {max(cx_7adjusted)} "
+              f"({100 * (1 - max(cx_7adjusted) / max(cx_3bucket)):.0f}% lower)")
+        peaks[model] = max(cx_7adjusted)
 
-    print("\nNon-interacting 7-bucket adjusted should be much lower — artifacts removed.")
+    print("\nPaper (Sec. 6.2): after adjustment the non-interacting curve is 'flattened to a"
+          " lower value' while the interacting one keeps its hump.")
+    print(f"Here: adjusted peaks interacting {peaks['interacting']}, non-interacting "
+          f"{peaks['non_interacting']} bytes.")
+    if peaks['non_interacting'] >= peaks['interacting']:
+        print("Not reproduced at 50 x 50: the adjustment lowers both models' peaks, and the"
+              " non-interacting one stays higher.\nThe Appendix guarantee needs grains"
+              " L >> G*sqrt(3 ln(2n^2)) ~ 35 cells (G = 7, n = 50), and particle counts"
+              " fluctuate more than 0/1 cells,\nso the count image keeps flickering across"
+              " more than one bucket, which the +-1 adjustment cannot remove.")
+    else:
+        print("Reproduced in direction: the non-interacting adjusted peak is the lower one.")
