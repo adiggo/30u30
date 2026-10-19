@@ -17,7 +17,7 @@ by using its memory like a tape (Section 4.1).
 
 Usage:
     python train_minimal.py             # paper's copy task, 3,000 iterations (~5-6 min on one CPU core)
-    python train_minimal.py --paper     # the same task for 10,001 iterations (320k sequences, ~25 min)
+    python train_minimal.py --paper     # the same task for 10,001 iterations (320k sequences, ~17 min)
     python train_minimal.py --iters 300 --max-len 5    # quick smoke run
 
 [PATCH 2026-10-18] Settings follow Table 2 / Sec. 4.1 / Sec. 4.6 of the paper (NTM with an LSTM
@@ -206,7 +206,7 @@ def main():
     parser.add_argument('--iters', type=int, default=3000,
                         help='training iterations (batches); default 3000, about 5-6 minutes on one CPU core')
     parser.add_argument('--paper', action='store_true',
-                        help="the paper's full run length here: 10,001 iterations x 32 = 320k sequences (~25 min)")
+                        help="the paper's full run length here: 10,001 iterations x 32 = 320k sequences (~17 min)")
     parser.add_argument('--max-len', type=int, default=20, help='sequence lengths 1..max-len (paper: 20)')
     parser.add_argument('--batch', type=int, default=32, help='sequences per batch (default 32)')
     parser.add_argument('--memory-slots', type=int, default=128, help='N, memory rows (paper: 128)')

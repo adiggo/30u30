@@ -79,7 +79,7 @@ The NTM uses a four-stage process to decide where to focus its "blurry" pointer:
 
 When implementing an NTM, pay attention to these stability details:
 
-- **Gradient Clipping (Section 4.6)**: "all gradient components are clipped elementwise to the range (-10, 10)". `train_minimal.py` does exactly that (`clip_grad_value_`); the repo used to clip the global gradient *norm* at 10, a different operation that rescales the whole gradient. With the per-bit BCE loss used here, a component exceeded 10 only a handful of times, during the few hundred iterations in which the network discovers the copy procedure (gradient norms then reach ~100-300). Both clips learned the task equally well in our runs.
+- **Gradient Clipping (Section 4.6)**: "all gradient components are clipped elementwise to the range (-10, 10)". `train_minimal.py` does exactly that (`clip_grad_value_`); the repo used to clip the global gradient *norm* at 10, a different operation that rescales the whole gradient. With the per-bit BCE loss used here, a component exceeded 10 only a handful of times, during the few hundred iterations in which the network discovers the copy procedure (gradient norms then reach ~100-300). In our runs the two clips behaved alike: both learned the task with seed 0, and with both, seed 2 destabilized after learning. The paper's clip applies to its cost *per sequence*, which is ~8L times larger than a per-bit mean; with `--loss sequence` the clip engages far more often, and seed 2 then trained stably (see Results).
 - **Numerical Stability**: Operations like sharpening ($w^\gamma$) can generate extremely large or small numbers. Use `torch.clamp` and small epsilons ($1e-8$) to prevent `NaN`.
 - **Initialization**: The paper resets the controller state, the previous read vectors and the memory to learned bias values at the start of every sequence (Section 4). This implementation uses fixed constants instead (registered buffers, not learned): memory 1e-6, head weightings one-hot at slot 0, controller state and read vectors zero.
 
@@ -101,7 +101,7 @@ pip install -r requirements.txt
 # Run the copy task training (paper's settings, 3,000 iterations: ~5 minutes on one CPU core)
 python train_minimal.py
 
-# The same task for 10,001 iterations (320k sequences), as the script used to run
+# The same task for 10,001 iterations (320k sequences, ~17 minutes), as the script used to run
 python train_minimal.py --paper
 ```
 
@@ -115,7 +115,7 @@ python train_minimal.py --paper
 | BCE per bit | 0.694 | 0.023 |
 | cost (bits per sequence, the paper's unit) | 84.2 | 2.8 |
 
-On lengths never seen in training the bit error is 0.42% at length 30 and 0.75% at length 50: the learned procedure generalizes, as in Figure 4. Before the vectorized shift, the same script managed ~1 iteration/s (1.06 s per iteration at length 10; `validation/day17_vectorized_shift.py`) and had done ~1,150 of its 10,001 iterations after 25 minutes.
+On lengths never seen in training the bit error is 0.42% at length 30 and 0.75% at length 50: the learned procedure generalizes, as in Figure 4. With `--paper` (10,001 iterations = 320k sequences, 991 s) the same run reaches 0.00% bit error from iteration 3,500 and a cost of 0.00 bits per sequence from iteration 7,000, with 0.00% at lengths 30 and 50 too; the paper's Figure 3 shows the NTM's cost reaching ~0 within its first 1,000k sequences. Before the vectorized shift, the same script managed ~1 iteration/s (1.06 s per iteration at length 10; `validation/day17_vectorized_shift.py`) and had done ~1,150 of its 10,001 iterations after 25 minutes.
 
 Training is seed-sensitive. The held-out error sits at 30-40% for the first 1,000-1,750 iterations, then collapses within a few hundred, and a run can later destabilize. Bit error after 3,000 iterations:
 
