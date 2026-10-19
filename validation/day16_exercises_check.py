@@ -5,6 +5,7 @@ Exercises 3-5 are scaffolds whose solutions only define training functions (thei
 __main__ just prints "... loaded."), so this script exercises those functions directly:
   - solution_3: a few epochs of sorting (N=5) with the repo PointerNetwork -> accuracy rises?
   - solution_4: one convex-hull batch -> is the loss finite? (padded hull labels)
+    [2026-10-18: STOP pointer + canonical labels; now also a short run of train_convex_hull()]
   - solution_5: a few TSP batches -> finite, decreasing loss?
   - exercise_5.compute_tour_length vs an independent closed-tour length; nearest-neighbour
     label quality vs brute-force optimal tours (n = 7).
@@ -87,12 +88,19 @@ results["solution_3"] = f"trains: final loss {hist[-1][0]}, greedy acc {greedy_a
 sol4 = load(f"{EX}/solutions/solution_4.py", "sol4")
 torch.manual_seed(0)
 pts, tgt = next(iter(DataLoader(sol4.ConvexHullDataset(32, 10), batch_size=32)))
-rpw = imp.ReadProcessWrite(input_dim=2, hidden_dim=32, use_set_encoder=True)
-_, lp, _ = rpw(pts, torch.full((32,), 10), 10, teacher_forcing=tgt)
-hull_loss = -lp.mean()
-print(f"solution_4 convex hull: one batch loss = {hull_loss.item()} "
+# [PATCH 2026-10-18] labels: canonical hull + STOP (= 10) + IGNORE_INDEX; the model needs the STOP slot
+rpw = imp.ReadProcessWrite(input_dim=2, hidden_dim=32, stop_token=True)
+_, lp, _ = rpw(pts, torch.full((32,), 10), 11, teacher_forcing=tgt)
+hull_loss = imp.compute_loss(lp, tgt)
+print(f"solution_4 convex hull: one batch loss = {hull_loss.item():.4f} "
       f"({int(torch.isinf(lp).sum())} of {lp.numel()} teacher-forced steps have log-prob -inf)")
-results["solution_4"] = f"loss {hull_loss.item()} (padded hull labels re-point at masked indices)"
+t0 = time.time()
+with contextlib.redirect_stdout(io.StringIO()):
+    hist4, exact4 = sol4.train_convex_hull(num_epochs=3, num_samples=640, hidden_dim=64)
+print(f"solution_4.train_convex_hull(3 epochs x 640 sets, hidden 64): losses {[round(v, 3) for v in hist4]}, "
+      f"greedy exact hulls {exact4:.1%} ({time.time() - t0:.0f}s)")
+results["solution_4"] = (f"finite loss {hull_loss.item():.3f}; trains: {hist4[0]:.3f} -> {hist4[-1]:.3f}, "
+                         f"exact hulls {exact4:.1%}")
 
 ex4 = load(f"{EX}/exercise_4.py", "ex4")
 em, ov = ex4.compute_hull_accuracy(torch.tensor([3, 1, 2]), torch.tensor([1, 2, 3]))
@@ -130,7 +138,7 @@ print(f"nearest-neighbour label tours (n=7, 20 instances): mean length / optimal
       f"max = {max(ratios):.3f}")
 
 torch.manual_seed(0)
-model5 = imp.ReadProcessWrite(input_dim=2, hidden_dim=32, use_set_encoder=True)
+model5 = imp.ReadProcessWrite(input_dim=2, hidden_dim=32)  # [PATCH 2026-10-18] new constructor
 opt5 = torch.optim.Adam(model5.parameters(), lr=1e-3)
 losses = []
 for b, (cty, tg) in enumerate(DataLoader(sol5.TSPDataset(320, 10), batch_size=32, shuffle=True)):

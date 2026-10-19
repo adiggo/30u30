@@ -51,7 +51,7 @@ Each solution is a fully working implementation that you can run directly:
 
 ### Solution 2: Set Encoder
 - Self-attention without positional encoding
-- Permutation invariance
+- Permutation equivariance (per element) and invariance (after mean pooling)
 - Layer normalization
 - Residual connections
 
@@ -63,7 +63,7 @@ Each solution is a fully working implementation that you can run directly:
 
 ### Solution 4: Convex Hull
 - Geometric reasoning with neural nets
-- Variable-length outputs
+- Variable-length outputs: a STOP pointer, IGNORE_INDEX padding, one canonical hull order
 - Visualization of predictions
 - Evaluation metrics for geometry
 
@@ -77,13 +77,18 @@ Each solution is a fully working implementation that you can run directly:
 
 ## Performance Expectations
 
-| Task | Small Set | Medium Set | Large Set | Notes |
-|------|-----------|------------|-----------|-------|
-| **Sorting** | 100% | 100% | 98% | Easiest task |
-| **Convex Hull** | 99% | 95% | 90% | Geometric task |
-| **TSP** | 90% | 80% | 70% | NP-hard problem |
+Measured on one CPU core on 2026-10-18 (the table that used to be here was not measured):
 
-*Small = 5-10 elements, Medium = 20-30, Large = 50+*
+| Task | Run | Result |
+|------|-----|--------|
+| **Sorting** (N = 5) | `python train.py` (Read-Process-Write, chosen elements masked) | 100% exact sorts |
+| **Sorting** (N = 5) | solution 3's `train_epoch` with the LSTM `PointerNetwork`, 8 epochs of 2,000 sets | 91.6% exact sorts |
+| **Convex Hull** (10 points) | `python train.py --task hull --set-size 10 --epochs 20` | 74.8% exact hulls |
+| **Convex Hull** (10 points) | `python solution_4.py` (8 epochs of 1,000 sets) | 56.0% exact hulls |
+| **TSP** (10 cities) | `python train.py --task tsp --set-size 10 --epochs 3` | 57.4% of tours match the nearest-neighbour teacher |
+
+Accuracy counts a set only if the whole output matches (for hulls: every vertex in order, then STOP).
+The README's "Results" section has the paper's sorting comparison (Table 1).
 
 ---
 

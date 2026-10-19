@@ -13,8 +13,9 @@ import torch.nn.functional as F
 class SetEncoder(nn.Module):
     """
     Self-attention based encoder for sets.
-    Omitting positional encodings ensures the output is invariant to 
-    input permutations.
+    [PATCH 2026-10-18] Omitting positional encodings makes the per-element outputs
+    permutation-EQUIVARIANT (they are shuffled with the inputs); their mean is
+    invariant to input permutations, which is what the test checks.
     """
     
     def __init__(self, input_dim, hidden_dim, num_heads=4):

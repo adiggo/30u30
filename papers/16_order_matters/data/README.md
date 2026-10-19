@@ -28,12 +28,12 @@ class SortingDataset(Dataset):
 
 **Usage:**
 ```bash
-python train.py --task sort --set-size 10 --train-samples 10000
+python train.py --task sort --set-size 10 --num-samples 10000
 ```
 
 **Dataset stats:**
-- **Default size:** 10,000 training samples, 1,000 validation
-- **Element range:** [0.0, 1.0] (uniform random)
+- **Default size:** 5,000 fresh training sets per epoch, 1,000 validation
+- **Element range:** `train.SortingDataset` draws uniformly from [0, 10) (the paper used [0, 1]; the snippet above shows [0, 1))
 - **Set sizes:** 5-50 elements (configurable)
 
 ---
@@ -51,19 +51,24 @@ import torch
 points = torch.rand(num_points, 2)
 
 # Compute ground truth hull
-hull = ConvexHull(points.numpy())
-hull_indices = hull.vertices  # Boundary point indices
+hull_indices = ConvexHull(points.numpy()).vertices  # counter-clockwise, arbitrary start
 ```
+
+**Targets** (`train.ConvexHullDataset`, 2026-10-18): the vertices rotated to start at the leftmost
+point (one canonical order per hull), then `STOP` = `num_points` (an extra learned memory slot of
+`ReadProcessWrite(stop_token=True)` that ends the output), then `IGNORE_INDEX` (-1) up to length
+`num_points + 1`; the loss skips the IGNORE steps. The earlier labels padded with a repeated vertex,
+which the decoder had already masked (infinite loss). Convex hull is a Pointer Networks task (Day 18).
 
 **Usage:**
 ```bash
-python train.py --task convex_hull --set-size 20 --train-samples 5000
+python train.py --task hull --set-size 10
 ```
 
 **Dataset stats:**
-- **Default size:** 5,000 training samples, 500 validation
+- **Default size:** 5,000 fresh training sets per epoch, 1,000 validation
 - **Point distribution:** Uniform in [0, 1]^2
-- **Hull size:** Variable (typically 30-40% of points)
+- **Hull size:** Variable (mean 6.0 vertices for 10 points, 7.8 for 20; measured on 5,000 sets)
 
 ---
 
@@ -78,8 +83,9 @@ cities = torch.rand(num_cities, 2)
 
 # Compute greedy nearest-neighbor tour (teacher signal)
 def greedy_tour(cities):
-    current = 0
-    unvisited = set(range(1, len(cities)))
+    # start at the leftmost city: an order-invariant model cannot see which city is index 0
+    current = int(torch.argmin(cities[:, 0]))
+    unvisited = set(range(len(cities))) - {current}
     tour = [current]
     
     while unvisited:
@@ -94,11 +100,11 @@ def greedy_tour(cities):
 
 **Usage:**
 ```bash
-python train.py --task tsp --set-size 15 --train-samples 10000
+python train.py --task tsp --set-size 15 --num-samples 10000
 ```
 
 **Dataset stats:**
-- **Default size:** 10,000 training samples, 1,000 validation
+- **Default size:** 5,000 fresh training sets per epoch, 500 validation
 - **City distribution:** Uniform in [0, 1]^2
 - **Tour quality:** Greedy heuristic (~1.25x optimal)
 
@@ -133,10 +139,10 @@ For reproducibility, you can generate fixed datasets:
 
 ```python
 import torch
-from train import get_dataset
+from train import SortingDataset
 
-# Generate dataset
-dataset = get_dataset(task='sort', num_samples=10000, set_size=10)
+# Generate dataset (each item is drawn at random when it is accessed)
+dataset = SortingDataset(num_samples=10000, set_size=10)
 
 # Save to disk
 torch.save({
@@ -185,30 +191,9 @@ print(f"Loaded {len(samples)} samples for {config['task']}")
 
 ## Dataset Statistics
 
-### Sorting
-
-| Set Size | Convergence Time | Accuracy |
-|----------|------------------|----------|
-| 5 | ~10 epochs | 100% |
-| 10 | ~20 epochs | 100% |
-| 20 | ~50 epochs | 99% |
-| 50 | ~100 epochs | 95% |
-
-### Convex Hull
-
-| Num Points | Hull Size (avg) | Convergence | Accuracy |
-|------------|-----------------|-------------|----------|
-| 10 | 4-5 points | ~50 epochs | 98% |
-| 20 | 6-8 points | ~100 epochs | 95% |
-| 50 | 10-15 points | ~200 epochs | 90% |
-
-### TSP
-
-| Num Cities | Tour Length (vs greedy) | Convergence |
-|------------|-------------------------|-------------|
-| 10 | 5-10% better | ~100 epochs |
-| 20 | 3-8% better | ~200 epochs |
-| 50 | 0-5% better | ~500 epochs |
+Measured results (sorting, convex hull) are in `../README.md` under "Results in this folder".
+The tables that used to be here (e.g. "100% sorting accuracy at 10 elements", "98% hulls at
+10 points") were not measurements and have been removed (2026-10-18).
 
 ---
 
@@ -291,7 +276,7 @@ values = values[:actual_size]
 python train.py --task sort --set-size 10 --epochs 50
 
 # Train on convex hull (medium)
-python train.py --task convex_hull --set-size 20 --epochs 100
+python train.py --task hull --set-size 20 --epochs 100
 
 # Train on TSP (hardest)
 python train.py --task tsp --set-size 15 --epochs 200
