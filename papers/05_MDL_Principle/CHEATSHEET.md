@@ -26,6 +26,15 @@ Total cost = L(H) + L(D|H)
 Best model = argmin { L(H) + L(D|H) }
 ```
 
+### Code lengths of continuous data need a precision (Sec. 2.2.2)
+
+```
+-log2 f(y) = bits for y at UNIT precision (rounded to whole units)
+y rounded to delta:  -log2 f(y) - n*log2(delta)   (delta well below the noise)
+-> compare models by DIFFERENCES at one delta (the shift cancels), never by a ratio
+   to "n x 32-bit floats" (float32 is a different precision)
+```
+
 ### Prequential MDL (Sequential)
 
 ```

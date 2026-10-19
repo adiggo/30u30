@@ -160,6 +160,8 @@ python train_minimal.py --monte-carlo    # Statistical comparison across trials
 
 The demo generates noisy polynomial data (true degree = 2, noise 1.5, 50 points) and selects the degree with the crude two-part code (MDL), Rissanen's renormalised NML, AIC, and BIC. Default run: MDL, NML and BIC pick degree 2, AIC picks 3. With `--monte-carlo` (100 datasets with random coefficients) the true degree is picked 87 times by the two-part code, 97 by NML, 85 by BIC and 58 by AIC.
 
+The script also reports code lengths for $y$ rounded to a stated precision (`--precision`, default 0.01). $-\log_2$ of a density is a code length at *unit* precision (Sec. 2.2.2); rounding to $\delta$ adds $n\log_2(1/\delta)$ bits to every model's code. So it reports differences, which do not depend on $\delta$: the selected model saves 154 bits over degree 0 and 61 bits over a fixed-length code for the rounded values. (An earlier version compared the MDL score with "50 x 32-bit floats", which mixes two precisions.)
+
 ---
 
 ## Exercises (in `Exercises/`)

@@ -13,7 +13,8 @@ What this script does:
 1. Generates synthetic polynomial data with known true degree
 2. Applies MDL, AIC, and BIC to select the best model
 3. Shows which method correctly identifies the true structure
-4. Demonstrates the compression achieved
+4. Compares code lengths at a stated precision (bits saved over the degree-0 model and over a
+   fixed-length code for y)
 
 The key insight: MDL finds the model that COMPRESSES data most,
 which usually means it found the TRUE underlying pattern.
@@ -133,7 +134,8 @@ def run_experiment(
     n_samples: int = 50,
     max_degree: int = 10,
     seed: int = 42,
-    verbose: bool = True
+    verbose: bool = True,
+    precision: float = 0.01
 ):
     """
     Run the MDL model selection experiment.
@@ -145,6 +147,7 @@ def run_experiment(
         max_degree: Maximum degree to consider
         seed: Random seed for reproducibility
         verbose: Whether to print detailed output
+        precision: Grid width delta to which y is rounded when code lengths are reported in bits
     
     Returns:
         Dictionary with results
@@ -232,25 +235,32 @@ def run_experiment(
         print(f"  BIC selects:  {bic_best} {'[ok]' if bic_best == true_degree else '[FAIL]'}")
     
     # =========================================================================
-    # Compression analysis
+    # [PATCH 2026-10-18] Code lengths at a stated precision. The old "compression ratio"
+    # (n x 32-bit floats / MDL bits) compared float32 precision with UNIT precision: -log2 of a
+    # density is the code length of y rounded to whole units (tutorial Sec. 2.2.2). Rounding y to
+    # a grid of width delta adds -n log2(delta) bits to every density-based code, so differences
+    # between codes do not depend on delta (for delta well below the noise), but ratios do.
     # =========================================================================
     
-    raw_bits = n_samples * 32  # 32 bits per float
-    best_mdl_bits = mdl_scores[mdl_best]
-    compression_ratio = raw_bits / best_mdl_bits
+    shift_bits = -n_samples * np.log2(precision)                       # same for every density code
+    n_grid = np.floor((y.max() - y.min()) / precision) + 1             # grid points over the observed range
+    fixed_length_bits = n_samples * np.log2(n_grid)                    # model-free baseline at this precision
+    mdl_bits_at_precision = mdl_scores[mdl_best] + shift_bits
+    bits_saved_vs_degree0 = mdl_scores[0] - mdl_scores[mdl_best]       # precision-free
     
     if verbose:
         print()
-        print("COMPRESSION ANALYSIS")
+        print(f"CODE LENGTHS FOR y ROUNDED TO {precision:g}")
         print("-" * 40)
-        print(f"  Raw data size:      {raw_bits} bits")
-        print(f"  MDL compressed:     {best_mdl_bits:.0f} bits")
-        print(f"  Compression ratio:  {compression_ratio:.2f}x")
-        
-        if compression_ratio > 1:
-            print(f"  [OK] Model found compressible structure!")
-        else:
-            print(f"  [NOTE] Data might be mostly noise")
+        print(f"  -log2 density is a code length at unit precision (Sec. 2.2.2);")
+        print(f"  rounding to {precision:g} adds -n log2({precision:g}) = {shift_bits:.1f} bits to each code.")
+        print(f"  Fixed-length code over the observed range: {fixed_length_bits:7.1f} bits")
+        print(f"  Two-part code, degree 0:                   {mdl_scores[0] + shift_bits:7.1f} bits")
+        print(f"  Two-part code, degree {mdl_best} (selected):        {mdl_bits_at_precision:7.1f} bits")
+        gap = fixed_length_bits - mdl_bits_at_precision
+        print(f"  The selected model saves {bits_saved_vs_degree0:.1f} bits over degree 0 and is "
+              f"{abs(gap):.1f} bits {'shorter' if gap > 0 else 'longer'} than the fixed-length code.")
+        print(f"  (Differences do not depend on the precision; the sending of the range is not counted.)")
     
     # =========================================================================
     # Model details
@@ -302,7 +312,10 @@ def run_experiment(
         'nml_correct': nml_best == true_degree,
         'aic_correct': aic_best == true_degree,
         'bic_correct': bic_best == true_degree,
-        'compression_ratio': compression_ratio,
+        'precision': precision,
+        'fixed_length_bits': fixed_length_bits,
+        'mdl_bits_at_precision': mdl_bits_at_precision,
+        'bits_saved_vs_degree0': bits_saved_vs_degree0,
         'mdl_scores': mdl_scores,
         'nml_scores': nml_scores,
         'aic_scores': aic_scores,
@@ -393,6 +406,8 @@ Examples:
                         help='Run Monte Carlo comparison (100 trials)')
     parser.add_argument('--trials', type=int, default=100,
                         help='Number of Monte Carlo trials (default: 100)')
+    parser.add_argument('--precision', type=float, default=0.01,
+                        help='Rounding precision of y for the code-length report (default: 0.01)')
     
     args = parser.parse_args()
     
@@ -411,7 +426,8 @@ Examples:
             n_samples=args.samples,
             max_degree=args.max_degree,
             seed=args.seed,
-            verbose=True
+            verbose=True,
+            precision=args.precision
         )
 
 

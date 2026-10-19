@@ -100,25 +100,33 @@ class MDLModelSelector:
         
         pass  # Your code here
     
-    def get_compression_ratio(self, x: np.ndarray, y: np.ndarray) -> float:
+    def get_compression_ratio(self, x: np.ndarray, y: np.ndarray, precision: float = 0.01) -> float:
         """
-        Calculate the compression ratio achieved.
-        
-        Compression ratio = Raw data bits / MDL bits
-        
-        A ratio > 1 means we found compressible structure!
-        
+        Compression ratio against a fixed-length code, both for y rounded to `precision`.
+
+        [PATCH 2026-10-18] The old version divided len(y) * 32 bits ("32-bit floats") by the
+        MDL score. But -log2 of a density is a code length at UNIT precision (tutorial
+        Sec. 2.2.2): y rounded to whole units, not to float32's ~7 digits, so that ratio mixed
+        two precisions. Compare codes for the same rounded data instead:
+            fixed-length code: len(y) * log2(number of grid points of width `precision`
+                               covering [min(y), max(y)])
+            model code:        self.scores[self.best_degree] - len(y) * log2(precision)
+        Ratio > 1: the model codes y more briefly than writing each value out.
+        The ratio depends on `precision` (both codes grow as it shrinks); differences in bits
+        between two codes at the same precision do not.
+
         Args:
             x: Input values
             y: Target values
-            
+            precision: Grid width to which y is rounded (units of y)
+
         Returns:
-            Compression ratio
+            Compression ratio at that precision
         """
-        # TODO: Implement compression ratio calculation
-        # Raw bits: len(y) * 32 (assuming 32-bit floats)
-        # MDL bits: self.scores[self.best_degree]
-        
+        # TODO: Implement the compression ratio at the stated precision
+        # n_grid = floor((max(y) - min(y)) / precision) + 1
+        # fixed_bits = len(y) * log2(n_grid);  model_bits = MDL score - len(y) * log2(precision)
+
         pass  # Your code here
     
     def get_model_probability(self, degree: int) -> float:
@@ -306,9 +314,10 @@ def test_implementation():
         print(f"   Compression ratio: {ratio:.2f}x")
         
         if ratio > 1:
-            print("   [ok] Data is compressible - structure found!")
+            print("   [ok] At precision 0.01 the model codes y more briefly than a fixed-length code")
         else:
-            print("   [NOTE] No compression - data might be random")
+            print("   [NOTE] At precision 0.01 the crude two-part code is not shorter than a fixed-length code "
+                  "(it spends 33 bits per coefficient + 42 for sigma)")
         print("   [ok] PASSED")
     except Exception as e:
         print(f"   [FAIL] FAILED: {e}")
