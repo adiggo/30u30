@@ -150,11 +150,11 @@ The coarse-graining is now the paper's centred window (`coarse_grain(grid, g)`, 
   - g = 7: 198 bytes on particle counts, 99 on occupancy, vs 78 for the interacting model;
   - g = 9: 132 / 69 vs 64.
 
-  So the paper's Sec. 6.2 contrast is not reproduced at this size. Two reasons:
+  So the paper's Sec. 6.2 contrast is not reproduced at this size. Two likely reasons:
   - The Appendix guarantee needs grains L >> G sqrt(3 ln 2n^2), about 35 cells here.
   - Particle counts fluctuate more than 0/1 cells (variance about rho vs rho(1 - rho)).
 
-  Also, the interacting model's *mean* density obeys the same discrete heat equation as the walkers'. Swapping a uniformly random adjacent pair gives E[x_{t+1}(v)] = x_t(v) + (1/E) sum over neighbours w of (x_t(w) - x_t(v)), which is linear; the paper's chain is this one watched only when it changes. So at coarse scales the two models differ in their fluctuations, not in their average profile.
+  Also, the interacting model's *mean* density obeys the same discrete heat equation as the walkers'. Swapping a uniformly random adjacent pair gives E[x_{t+1}(v) | x_t] = x_t(v) + (1/E) sum over neighbours w of (x_t(w) - x_t(v)), with E the number of adjacent pairs, which is linear; the paper's chain is this one watched only when it changes. So at coarse scales the two models differ in their fluctuations, not in their average profile.
 
 ### What They Chose NOT to Measure (Section 2)
 
