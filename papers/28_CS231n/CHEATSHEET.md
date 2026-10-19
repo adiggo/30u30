@@ -12,7 +12,8 @@ CNNs exploit spatial structure in images by using small, shared filters instead 
 
 ```bash
 python setup.py                          # Check environment
-python train_minimal.py --epochs 5       # Train on CIFAR-10
+python train_minimal.py --gradcheck      # Backprop vs numerical gradients (gradient check)
+python train_minimal.py                  # Train on 10k CIFAR-10 images with backprop (~51% test acc)
 python visualization.py                  # Generate filter/activation visualizations
 ```
 
@@ -154,8 +155,8 @@ Common stacks:
 
 | File | Use It For |
 |------|-----------|
-| `implementation.py` | Understanding conv/pool/FC forward pass internals |
-| `train_minimal.py` | Quick CNN training on CIFAR-10 |
+| `implementation.py` | Understanding conv/pool/FC forward and backward pass internals |
+| `train_minimal.py` | Quick CNN training on CIFAR-10 (NumPy backprop, a few minutes on one CPU core) |
 | `visualization.py` | Visualizing filters and activation maps |
 | `exercises/` | Building CNN components from scratch |
 

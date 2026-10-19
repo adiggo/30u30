@@ -157,6 +157,11 @@ Not in the original CS231n CNN notes, but covered in the course. Normalizes acti
 ### Memory Considerations
 VGGNet uses ~93 MB per image in the forward pass alone. With gradients, that doubles. Mini-batch of 64 images = ~12 GB. This is why GPU memory is often the bottleneck, not computation.
 
+### Backprop in Our Code
+`implementation.py` has a backward function for every layer. The convolution backward works in the im2col view: two matrix multiplies (dW = dout_row · X_colᵀ, dX_col = W_rowᵀ · dout_row) and `col2im`, which adds every column back onto the input patch it came from. Overlapping windows share pixels, so their gradients must add up (`np.add.at`, never a plain assignment). Max-pool backward routes each window's gradient to its maximum (the first one on ties, as PyTorch does). `SimpleCNN.backward` chains the layers in reverse, and `SimpleCNN.update` is SGD with momentum and L2 weight decay, as in CS231n's notes on setting up and training networks. `validation/day28_backprop_check.py` compares every gradient with `torch.autograd` (float64, relative error ≤ 1e-11) and with centred finite differences (≤ 2e-8).
+
+`train_minimal.py` used to estimate gradients by finite differences instead: 2 × 67,642 forward passes per SGD step, about 15 minutes per step on one CPU core, so it never finished an epoch. Finite differences are a test for a backward pass, not a way to train; `train_minimal.py --gradcheck` still uses them that way.
+
 ---
 
 ## What to Build
@@ -167,8 +172,10 @@ VGGNet uses ~93 MB per image in the forward pass alone. With gradients, that dou
 # Verify environment
 python setup.py
 
-# Run the CNN implementation on CIFAR-10
-python train_minimal.py --epochs 5 --lr 0.01
+# Check backprop against numerical gradients, then train the NumPy CNN on CIFAR-10
+python train_minimal.py --gradcheck   # relative errors below 1e-7
+python train_minimal.py               # 10k train / 1k test images, 6 epochs: ~51% test accuracy (chance 10%), ~1.5 min of CPU
+python train_minimal.py --long        # 50k / 10k images, 5 epochs: ~63% test accuracy, ~6.5 min of CPU
 
 # Generate visualizations
 python visualization.py
@@ -204,8 +211,8 @@ Solutions are in `exercises/solutions/`. Try to get stuck first.
 | `README.md` | This file — overview and guide |
 | `paper_notes.md` | ELI5 + detailed notes on CS231n CNN module |
 | `CHEATSHEET.md` | Quick reference for CNN hyperparameters and formulas |
-| `implementation.py` | CNN from scratch in NumPy (conv, pool, FC layers) |
-| `train_minimal.py` | Train a simple CNN on CIFAR-10 |
+| `implementation.py` | CNN from scratch in NumPy (conv, pool, FC layers; forward and backward) |
+| `train_minimal.py` | Train a simple CNN on CIFAR-10 with backprop and SGD + momentum |
 | `visualization.py` | Visualize filters, activation maps, feature hierarchies |
 | `setup.py` | Verify your environment |
 | `requirements.txt` | Python dependencies |
