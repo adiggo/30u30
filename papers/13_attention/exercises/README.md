@@ -111,7 +111,8 @@ The complete encoder-decoder architecture:
 2. Build the decoder stack (with masking!)
 3. Connect encoder to decoder via cross-attention
 4. Add embeddings and output projection
-5. Train on a simple sequence task
+5. Run it on a simple copy example (forward pass only: the exercise has no backward pass;
+   `../train_minimal.py` trains the full model with backprop and Adam)
 
 **Key Concepts:**
 - Causal masking in decoder
@@ -164,7 +165,8 @@ After completing these exercises, you should:
 ✅ Grasp multi-head attention's parallel perspectives
 ✅ Implement positional encoding from scratch
 ✅ Build encoder and decoder blocks
-✅ Train a working Transformer on simple tasks
+✅ Train a working Transformer on simple tasks (`python train_minimal.py`, which uses the
+   backward pass in `implementation.py`)
 
 ---
 

@@ -170,6 +170,36 @@ def get_lr(step, d_model, warmup=4000):
 
 ---
 
+## Backward Pass (how `train_minimal.py` trains)
+
+Each module caches its forward values; `backward(dL/d_out)` returns `dL/d_in` and fills `.grads`.
+Checked against `torch.autograd` and finite differences in `validation/day13_backprop_check.py`.
+
+| Forward | Backward |
+|---------|----------|
+| `Y = X @ W` | `dX = dY @ W.T`; `dW = X.reshape(-1, d_in).T @ dY.reshape(-1, d_out)` (sums over batch and positions) |
+| `p = softmax(s)` (per row) | `ds = p * (dp - (dp * p).sum(-1, keepdims=True))` |
+| `out = P @ V` | `dP = dout @ V.T`; `dV = P.T @ dout` (batched: transpose the last two axes) |
+| `S = Q @ K.T / sqrt(d_k)`, then mask | zero `dS` where masked; `dQ = dS @ K / sqrt(d_k)`; `dK = dS.T @ Q / sqrt(d_k)` |
+| `z = a + b` (residual) | `da = db = dz` |
+| LayerNorm `y = gamma * x_hat + beta` | `g = dy * gamma`; `dx = (g - g.mean(-1, keepdims=True) - x_hat * (g * x_hat).mean(-1, keepdims=True)) / std` |
+| dropout `x * m / (1 - p)` | `dout * m / (1 - p)`, same mask `m` |
+| embedding `E[tokens]` | `np.add.at(dE, tokens, dout)` (scatter-add: repeated tokens accumulate) |
+| softmax + cross-entropy | `dlogits = (p - q) / N` at the N counted positions, 0 at padding; `q` = one-hot or label-smoothed target |
+
+- Self-attention reads `x` as query, key and value: add the three input gradients (plus the residual).
+- Cross-attention: the encoder output gets gradient from every decoder layer; sum them.
+- Tied weights (Sec. 3.4): one matrix used three times gets the sum of three gradients.
+
+```python
+# Adam, Sec. 5.3: beta1 = 0.9, beta2 = 0.98, eps = 1e-9, lr = get_lr(t, d_model, warmup)
+m = 0.9 * m + 0.1 * g
+v = 0.98 * v + 0.02 * g * g
+param -= lr * (m / (1 - 0.9**t)) / (np.sqrt(v / (1 - 0.98**t)) + 1e-9)   # in place
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Cause | Solution |

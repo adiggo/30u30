@@ -325,6 +325,10 @@ def get_lr(step, d_model, warmup=4000):
     return d_model**(-0.5) * min(step**(-0.5), step * warmup**(-1.5))
 ```
 
+The rate rises linearly for `warmup` steps and then decays as 1/√step; the peak, at step = warmup,
+is (d_model · warmup)^-0.5. `train_minimal.py` implements exactly this `get_lr` and uses it with Adam
+(β1 = 0.9, β2 = 0.98, ε = 1e-9, Sec. 5.3); see "Training It in NumPy" below.
+
 ---
 
 ## 📊 Key Hyperparameters (Original Paper)
@@ -346,20 +350,86 @@ def get_lr(step, d_model, warmup=4000):
 ### 1. Label Smoothing
 ```python
 # Instead of one-hot [0, 0, 1, 0, 0]
-# Use [0.025, 0.025, 0.9, 0.025, 0.025]
+# Use [0.02, 0.02, 0.92, 0.02, 0.02]   (epsilon = 0.1, 5 classes)
 smooth_labels = (1 - epsilon) * one_hot + epsilon / vocab_size
 ```
 
+The paper uses epsilon = 0.1 (Sec. 5.4). In `train_minimal.py` this is `--label_smoothing`
+(default 0 for the toy tasks, see below).
+
 ### 2. Dropout Placement
-- After attention weights
-- After each sub-layer (before adding residual)
-- On embeddings
+- After each sub-layer (before adding residual) (Sec. 5.4)
+- On the sums of embeddings and positional encodings (Sec. 5.4)
+- After attention weights (this code's choice; the paper does not list it)
 
 ### 3. Weight Initialization
 ```python
 # Xavier/Glorot for linear layers
 W = np.random.randn(in_dim, out_dim) * np.sqrt(2.0 / (in_dim + out_dim))
 ```
+
+---
+
+## 🏃 Training It in NumPy
+
+`implementation.py` has a hand-written backward pass for every module (embedding, positional
+encoding, dropout, scaled dot-product attention with its masks, the multi-head split/merge and
+projections, the feed-forward network, LayerNorm, residuals, encoder and decoder blocks, the output
+projection), and `train_minimal.py` uses it to train the model. Each `forward()` caches what its
+`backward()` needs; `backward(dL/d_output)` returns `dL/d_input` and stores parameter gradients in
+`.grads`. The formulas are in the CHEATSHEET. `validation/day13_backprop_check.py` compares every
+parameter gradient with `torch.autograd` (float64, worst relative error ~1e-14) and with central
+finite differences, dropout off and on.
+
+The recipe is the paper's (Sec. 5.3-5.4): softmax cross-entropy over the non-padding targets with
+optional label smoothing, Adam with β1 = 0.9, β2 = 0.98, ε = 1e-9 and the warm-up schedule above,
+and dropout 0.1.
+
+```bash
+python train_minimal.py                       # copy task
+python train_minimal.py --task reverse        # output the source reversed
+python train_minimal.py --share_embeddings    # tie embeddings and output projection (Sec. 3.4)
+python train_minimal.py --label_smoothing 0.1 # the paper's eps_ls
+```
+
+Default run: copy sequences of 8 tokens drawn from 9 symbols, 2,000 training and 200 test sequences,
+1,860 Adam steps:
+
+| Test set | Loss | Token accuracy | Exact sequences (greedy decoding) |
+|---|---|---|---|
+| Before training | 2.520 (≈ ln 12) | 5.1% | 0% |
+| After training | 0.0045 | 100% | 100% |
+
+Training took 169 s on a shared 2-core machine (3 minutes in all with the evaluations); an idle
+core is faster. After training, the first decoder layer's cross-attention is the alignment: target
+step t puts ~99% of its weight on source position t (on the reverse task, on position L-1-t).
+
+The other settings reach the same accuracy (test set, 1,860 steps):
+
+| Setting | Test loss before → after | Token accuracy | Exact sequences |
+|---|---|---|---|
+| `--task reverse` | 2.520 → 0.0033 | 100% | 100% |
+| `--share_embeddings` | 2.883 → 0.0041 | 100% | 100% |
+| `--label_smoothing 0.1` | 2.520 → 0.078 | 100% | 100% |
+| `--seed 7` | 2.537 → 0.0044 | 100% | 100% |
+
+With label smoothing the test cross-entropy ends about 17 times higher at the same accuracy: the
+model is trained to stay a little unsure, the "hurts perplexity" effect of Sec. 5.4.
+
+**Paper vs this script.** Everything is scaled to one CPU core:
+
+| | Paper (base model) | `train_minimal.py` |
+|---|---|---|
+| Data | WMT 2014 En-De, batches of ~25k source + 25k target tokens | synthetic copy/reverse, batches of 32 sequences × 8 tokens |
+| Model | d_model 512, 6 + 6 layers, 8 heads, d_ff 2048 | d_model 64, 2 + 2 layers, 4 heads, d_ff 256 |
+| Steps | 100k (12 hours on 8 P100 GPUs) | 1,860 |
+| Warm-up | 4,000 steps | 800 steps (with 4,000 the run would end before the peak) |
+| Label smoothing | ε_ls = 0.1 | 0 by default |
+| Shared embedding/softmax weights (Sec. 3.4) | yes | off by default, `--share_embeddings` |
+
+Label smoothing defaults to 0 because each toy target has exactly one right answer, so there is no
+uncertainty for it to express; with ε = 0.1 the training objective cannot go below the entropy of
+the smoothed target, 0.53 nats for 12 symbols.
 
 ---
 
