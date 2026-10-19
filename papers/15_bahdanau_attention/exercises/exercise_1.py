@@ -27,9 +27,10 @@ class AdditiveAttention(nn.Module):
     6. Context: weighted sum of values (encoder outputs)
     
     Args:
-        hidden_size: Dimension of the attention hidden layer
-        query_size: Dimension of the query (decoder hidden state)
-        key_size: Dimension of keys/values (encoder outputs)
+        hidden_size: Dimension of the attention hidden layer (n' in the paper, Appendix A.2.2)
+        query_size: Dimension of the query (decoder hidden state, n)
+        key_size: Dimension of keys/values (encoder annotations h_j = [forward; backward],
+                  2n for a bidirectional encoder with n units per direction, Sec. 3.2)
     """
     
     def __init__(self, hidden_size: int, query_size: int, key_size: int):

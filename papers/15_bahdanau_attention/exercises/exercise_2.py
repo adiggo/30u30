@@ -142,8 +142,9 @@ def test_encoder():
     assert hidden.shape == expected_hidden_shape, \
         f"Hidden shape wrong: {hidden.shape}, expected {expected_hidden_shape}"
     
-    # Check that padding positions have some output (they get backward context)
-    print(f"   Output norm at padded position: {outputs[0, 8].norm().item():.4f}")
+    # [PATCH 2026-10-18] packing skips padding, so padded positions come back as exact zeros
+    # (the old comment said they "get backward context")
+    print(f"   Output norm at padded position (should be 0): {outputs[0, 8].norm().item():.4f}")
     
     print("Test passed.")
     print(f"   Output shape: {outputs.shape}")

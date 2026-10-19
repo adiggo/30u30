@@ -29,43 +29,45 @@ python solution_5.py --demo  # Demo with synthetic data
 
 ## Expected Results
 
-After running `solution_4.py`:
+Measured output of `solution_4.py` (CPU, seed 42; about 6 minutes on one busy core):
 
 ```
-Device: cuda (or cpu)
+Device: cpu
 Creating datasets...
 Creating model...
-Parameters: ~150,000
+Parameters: 399,922
 
 Training...
 ==================================================
-Epoch  5 | Train: 1.2345 | Val: 1.1234 | Acc: 45%
-Epoch 10 | Train: 0.5678 | Val: 0.4567 | Acc: 72%
-Epoch 15 | Train: 0.2345 | Val: 0.2123 | Acc: 85%
-Epoch 20 | Train: 0.1234 | Val: 0.1345 | Acc: 91%
-Epoch 25 | Train: 0.0789 | Val: 0.0912 | Acc: 94%
-Epoch 30 | Train: 0.0567 | Val: 0.0678 | Acc: 96%
+Epoch  1 | Train: 3.0682 | Val: 1.2632
+Epoch  5 | Train: 0.0882 | Val: 0.0220 | Acc: 96.00%
+Epoch 10 | Train: 0.3995 | Val: 0.0043 | Acc: 100.00%
+Epoch 15 | Train: 0.0508 | Val: 0.0167 | Acc: 99.50%
+Epoch 20 | Train: 0.0617 | Val: 0.0029 | Acc: 100.00%
+Epoch 25 | Train: 0.0161 | Val: 0.1237 | Acc: 94.00%
+Epoch 30 | Train: 0.0009 | Val: 0.0004 | Acc: 100.00%
 ==================================================
 
-Final Accuracy: 96%
+Final Accuracy: 100.00%
 Success: Model achieves >90% accuracy.
-
-Examples:
-  Input:  [5, 3, 8, 2, 1]
-  Output: [1, 2, 8, 3, 5]
-  Target: [1, 2, 8, 3, 5]
 ```
+
+(The script prints every epoch; accuracy, on 200 validation sequences, every 5th. The occasional
+dip, as at epoch 25, comes from Adam with batch size 32 and no learning-rate decay.)
 
 ## Key Implementation Details
 
 ### Solution 1: Attention
+- The paper's alignment model (Appendix A.2.2): `query_size` = n (decoder state), `key_size` = 2n
+  (bidirectional annotations), `hidden_size` = n'
 - Uses `nn.Linear` without bias for cleaner math
 - Xavier initialization for stable training
 - Proper masking with `-inf` before softmax
 
 ### Solution 2: Encoder
 - Packs sequences for efficient RNN processing
-- Projects bidirectional output to single hidden size
+- Returns the 2n-dim annotations h_j = [forward; backward] (Sec. 3.2, Eq. 7) and sums the two
+  directions' final states for the decoder (the paper uses s_0 = tanh(W_s backward h_1))
 - Handles variable-length sequences correctly
 
 ### Solution 3: Decoder
