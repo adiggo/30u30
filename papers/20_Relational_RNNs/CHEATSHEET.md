@@ -2,33 +2,27 @@
 
 ## The Big Idea (30 seconds)
 
-**Problem:** Standard RNNs (LSTMs) squash all history into a single vector, causing "relational amnesia" over long sequences.
-**Insight:** Instead of one vector, keep a "team" of memory slots. Let them "talk" to each other (attend) at every step before updating.
-**Result:** A model that can reason about objects and relationships over time (e.g., "The ball I saw at t=5 is the same one at t=100").
+**Problem:** An LSTM packs everything into one vector, so separate facts blur; slot memories (NTM, DNC) keep facts apart but give the slots no direct way to interact once written.
+**Insight:** Keep a small matrix of memory slots and let the slots attend to each other *and to the new input* at every step (multi-head dot-product attention), then gate the result into memory like an LSTM.
+**Result:** On the Nth Farthest task the RMC reached 91% while LSTM and DNC stayed below 30% (Sec. 5.1); it also set the then state of the art on WikiText-103 (test perplexity 31.6 vs 34.3 for the LSTM, Table 2).
 
-**The one picture to remember:**
+**The one picture to remember** (Fig. 1a; what `implementation.py` computes):
 
 ```text
-       Input x_t
-          |
-    +-----+-----+
-    | Project & |  <-- Concatenate input to each slot
-    |   Tile    |
-    +-----+-----+
-          |
-    [ Slot 1 ] [ Slot 2 ] ... [ Slot N ]  (Previous Memory M_{t-1})
-          |        |              |
-    +---------------------------------+
-    |   Multi-Head Self-Attention     |  <-- "Team Meeting"
-    +---------------------------------+
-          |        |              |
-       [Attended Information]
-          |        |              |
-    +---------------------------------+
-    |    Gated Update (LSTM-style)    |  <-- "Write/Forget"
-    +---------------------------------+
-          |
-    New Memory M_t
+ M_{t-1}: N slots x F          x_t
+   [ m_1 ]                       |  Linear -> x~ (one row of width F)
+   [ ... ]                       |
+   [ m_N ]   [M; x~]: N+1 rows <-+   append the input as an extra ROW
+      |
+      |  MHDPA: queries from the N slots, keys/values from all N+1 rows
+      |         -> N x (N+1) attention per head (last column = "input")
+      v
+   LN(M + attention)            residual + LayerNorm
+   LN(. + MLP(.))               row-wise MLP g_psi + residual + LayerNorm   -> G
+      |
+   M_t = i * tanh(G) + f * M_{t-1}     i, f = sigmoid(W x~ + U tanh(M_{t-1}) + [0; +1])
+      |
+   output = flatten(M_t)  (N*F numbers) -> output MLP -> logits
 ```
 
 ---
@@ -38,99 +32,91 @@
 ```bash
 cd papers/20_Relational_RNNs
 
-# 1. Train RMC vs LSTM (The "Showdown")
-python train_minimal.py --model both --save_plot
+# 1. RMC vs a parameter-matched LSTM on the reduced Nth Farthest task, with plots (~2 min)
+python train_minimal.py --save_plot --visualize
+python train_minimal.py --curriculum_steps 0     # the paper's protocol: both stay at 2/K
 
-# 2. Visualize Attention (The "Thought Process")
-python train_minimal.py --model rmc --visualize
+# 2. Unit checks of the core (shapes, equivariance, gate limits, gradients)
+python ../../validation/day20_rmc_paper_check.py
 
-# 3. Step-by-step Implementation Guide
+# 3. Step-by-step implementation guide
 python exercises/exercise_01_attention.py
 ```
 
 ---
 
-## Key Parameters for RMC
+## Key Parameters for the RMC (`RelationalMemory`)
 
-| Parameter | Typical Range | What It Does | Tips |
-|-----------|--------------|--------------|------|
-| `num_slots` | 4-16 | Number of memory vectors | More slots = more "objects" tracked. Too many = slow. |
-| `slot_size` | 32-128 | Size of each vector | Total memory = slots * size. |
-| `num_heads` | 4-8 | Attention heads | Allows slots to attend to different *types* of info simultaneously. |
-| `num_blocks` | 1 | Stacked RMC layers | usually 1 is enough. |
-| `gate_style` | LSTM | Input/Forget gates | **Crucial:** Initialize forget bias to 1.0! |
+| Parameter | Paper / Sonnet | Here (default) | What It Does |
+|-----------|----------------|----------------|--------------|
+| `mem_slots` (N) | 1, 8 or 16 (Nth Farthest) | 4 | Rows of memory. Weights are shared across rows, so N changes capacity, not the parameter count |
+| `mem_size` (F) | 2048 / N total units | 64 | Width of each slot; `num_heads * head_size` |
+| `num_heads` | 1, 8 or 16 | 4 | Each head has its own q/k/v projections; head outputs are concatenated back to width F |
+| `num_blocks` | 1 | 1 | Rounds of attention + MLP per time step |
+| `attention_mlp_layers` | 2 (Sonnet) | 2 | Depth of the row-wise MLP g_psi |
+| `gate_style` | 'unit' or 'memory' | 'unit' | One gate per unit, or one scalar gate per slot |
+| `forget_bias` | +1 | +1 | Added inside the forget-gate sigmoid: sigma(1) = 0.73, so memory persists by default |
+| `qkv_layer_norm` | Sonnet: yes | True | LayerNorm on the q, k, v projections (not in the paper's equations) |
 
 ---
 
 ## The Math (Copy-Paste Ready)
 
-### 1. Multi-Head Attention (MHDPA)
+### 1. Attention over [M; x~] (Eq. 2)
 
 ```python
-def attention(query, key, value):
-    """
-    Standard Scaled Dot-Product Attention.
-    Args:
-        query: [batch, heads, slots, d_k]
-        key:   [batch, heads, slots, d_k]
-        value: [batch, heads, slots, d_v]
-    """
-    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-    probs = F.softmax(scores, dim=-1)
-    return torch.matmul(probs, value), probs
+mem_plus_input = torch.cat([memory, x_tilde], dim=1)        # (B, N+1, F): ROW-wise concat
+q, k, v = split_heads(qkv_norm(qkv(mem_plus_input)))        # each (B, H, N+1, d)
+q = q[:, :, :N]                                              # queries from the N memory rows only
+weights = softmax(q @ k.transpose(-2, -1) / sqrt(d))         # (B, H, N, N+1)
+attended = merge_heads(weights @ v)                          # (B, N, F): memory keeps its shape
 ```
 
-### 2. Gated Update (LSTM-style)
+### 2. MLP and gated update (Fig. 1a, Eq. 7, Sonnet's gates)
 
 ```python
-def gated_update(m_old, m_attended, x_t):
-    """
-    m_old:      Previous memory
-    m_attended: Result of self-attention
-    x_t:        Current input
-    """
-    # Inputs to gates include OLD memory and NEW input
-    combined = torch.cat([m_old, x_t_tiled], dim=-1)
-    
-    f_gate = torch.sigmoid(W_f(combined) + b_f) # Forget
-    i_gate = torch.sigmoid(W_i(combined) + b_i) # Input
-    
-    # Candidate memory usually comes from the attention output
-    candidate = torch.tanh(m_attended)
-    
-    # Final Update
-    m_new = f_gate * m_old + i_gate * candidate
-    return m_new
+m1 = norm_attention(memory + attended)                       # residual + LayerNorm
+G = norm_mlp(m1 + mlp(m1))                                   # row-wise MLP + residual + LayerNorm
+gates = gate_memory_proj(torch.tanh(memory)) + gate_input_proj(x_tilde)   # x~ broadcasts over rows
+i, f = gates.chunk(2, dim=-1)
+i, f = torch.sigmoid(i + 0.0), torch.sigmoid(f + 1.0)       # input bias 0, forget bias +1
+next_memory = i * torch.tanh(G) + f * memory                 # no output gate
 ```
+
+Why `tanh(memory)` in the gates: the paper's gates read the previous output h_{t-1}; with the output gate removed, Eq. 8 makes h_{t-1} = tanh(m_{t-1}).
 
 ---
 
 ## Common Issues & Fixes
 
-### Loss Is Not decreasing
-```python
-# Problem: Gradients vanishing or memory washing out
-# Fix 1: Check forget gate initialization
-nn.init.constant_(self.gate_forget.bias, 1.0) 
-
-# Fix 2: Check LayerNorm placement
-# RMC applies LayerNorm *inside* the recurrence, after attention
-x = self.norm1(x + self.attention(x))
+### Accuracy stuck at 2/K (25% for 8 vectors, 50% for 4)
+```text
+That is the free part of the task: when the question asks for the K-th farthest vector
+(n = K-1) the answer is m itself, which is in the input. Look at the accuracy on the other
+questions (train_minimal.py prints it per n); chance there is 1/(K-1).
+Why it sticks: with n uniform, averaged over n every label other than m is equally likely
+whatever the vectors are, so nothing improves the loss until the model combines n with the
+distances. The paper's RMC needed hours on a GPU; on a CPU, ask only for the farthest vector
+first (train_minimal.py --curriculum_steps, default 1500 of 3000 steps).
 ```
 
-### Model is Slow
+### Attention matrix is N x N
 ```python
-# Problem: Attention is O(N^2) where N is memory slots
-# Fix: Keep N (slots) small (e.g., 4-8). 
-# RMC is efficient precisely because it attends to *memory*, not history.
+# Problem: the input was tiled onto every slot as extra features (the old simplified cell)
+# Fix: append it as a ROW and take queries from the memory rows only
+mem_plus_input = torch.cat([memory, x_tilde], dim=1)   # dim=1 (rows), not dim=-1 (features)
 ```
 
-### "RuntimeError: size mismatch"
+### Parameters that never get a gradient
 ```python
-# Problem: Concatenation axis wrong
-# Fix: Ensure you are tiling the input to match the number of slots
-input_tiled = input_emb.unsqueeze(1).expand(-1, num_slots, -1)
-memory_aug = torch.cat([memory, input_tiled], dim=-1)
+# Dead code passes shape tests. After one backward pass:
+dead = [n for n, p in model.named_parameters() if p.grad is None or p.grad.abs().max() == 0]
+```
+
+### All slots end up identical
+```python
+# The step treats rows symmetrically (shared weights), so identical rows stay identical.
+# Sonnet starts from the identity matrix (padded to N x F): every row is different.
 ```
 
 ---
@@ -139,10 +125,10 @@ memory_aug = torch.cat([memory, input_tiled], dim=-1)
 
 | Feature | LSTM | Transformer | Relational RNN (RMC) |
 | :--- | :--- | :--- | :--- |
-| **Memory** | Single vector | Entire history | Set of vectors (Slots) |
-| **Reasoning** | Implicit (gates) | Explicit (Attention) | Explicit (Attention) |
-| **Cost** | O(Seq) | O(Seq^2) | O(Seq x Slots^2) |
-| **Best For** | Short/Medium seq | Parallel/Offline | Long/Online Reasoning |
+| **State** | One vector | Every past token (KV cache) | N slots (fixed) |
+| **Mixing** | Gates | Attention over the history | Attention among slots + the current input |
+| **Cost per step** | O(h^2) for hidden size h | t scores per head, grows with t | N(N+1) scores per head, constant |
+| **Weak spot** | Relating stored facts | Memory grows with the sequence | Lossy: a slot that dropped a fact cannot get it back |
 
 ---
 

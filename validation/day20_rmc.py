@@ -1,4 +1,4 @@
-"""Day 20 reference check: Relational Memory Core (Santoro et al. 2018, arXiv 1806.01822v2).
+"""Day 20 reference check of the PRE-2026-10-18 simplified RMC cell (Santoro et al. 2018, arXiv 1806.01822v2).
 
 What the paper specifies (Section 3):
   Eq 2   M~ = softmax( M W^q ([M; x] W^k)^T / sqrt(d_k) ) [M; x] W^v
@@ -18,20 +18,40 @@ Checks
   4. Contrast with paper Eq 2: attention shape and the input-as-row formulation (tiny example).
   5. Nth-farthest generator labels vs independent recomputation + trivial baselines for the MSE target.
 
-Usage: OMP_NUM_THREADS=1 python validation/day20_rmc.py [path/to/20_Relational_RNNs]
+[PATCH 2026-10-18] implementation.py now holds the paper's RMC (checked by day20_rmc_paper_check.py), so this
+script reads the simplified cell and the old regression generator from git commit ORIG_REF, the last commit
+that had them (`git show`, no checkout; needs the repo's git history).
+
+Usage: OMP_NUM_THREADS=1 python validation/day20_rmc.py
 """
+import ast
 import math
 import os
-import sys
+import subprocess
+import types
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (this file is in validation/)
-DAY = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "papers", "20_Relational_RNNs")
-sys.path.insert(0, DAY)
-from implementation import RelationalMemory, RelationalRNN  # noqa: E402
-from train_minimal import generate_nth_farthest_batch  # noqa: E402
+ORIG_REF = "dfcaad3"
+
+
+def git_source(path):
+    return subprocess.run(["git", "-C", REPO, "show", f"{ORIG_REF}:{path}"], capture_output=True, text=True,
+                          check=True).stdout
+
+
+old_impl = types.ModuleType("implementation_simplified")       # the pre-replacement implementation.py
+exec(compile(git_source("papers/20_Relational_RNNs/implementation.py"), f"implementation.py@{ORIG_REF}", "exec"),
+     old_impl.__dict__)
+RelationalMemory, RelationalRNN = old_impl.RelationalMemory, old_impl.RelationalRNN
+_tm = ast.parse(git_source("papers/20_Relational_RNNs/train_minimal.py"))   # only its data generator is needed
+_gen = next(n for n in _tm.body if isinstance(n, ast.FunctionDef) and n.name == "generate_nth_farthest_batch")
+_ns = {"torch": torch}
+exec(compile(ast.Module(body=[_gen], type_ignores=[]), f"train_minimal.py@{ORIG_REF}", "exec"), _ns)
+generate_nth_farthest_batch = _ns["generate_nth_farthest_batch"]
+print(f"Checking the simplified RMC cell and regression task from git {ORIG_REF} (replaced on 2026-10-18)")
 
 torch.manual_seed(0)
 ok = True
@@ -129,5 +149,5 @@ print(f"[data] targets vs independent argmax-distance recomputation: max|delta| 
       f"MSE baselines: predict 0 -> {mse_zero:.3f}; predict -{c:.2f}*v0 -> {mse_neg:.3f}")
 ok &= lab_err == 0.0
 
-print(f"\nRESULT: {'PASS' if ok else 'FAIL'} (code matches its own equations and PyTorch SDPA; "
+print(f"\nRESULT: {'PASS' if ok else 'FAIL'} (the {ORIG_REF} cell matches its own equations and PyTorch SDPA; "
       f"architecture deviates from paper Eq 2 / Fig 1 as listed above)")
