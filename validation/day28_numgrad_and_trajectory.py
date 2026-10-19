@@ -1,5 +1,14 @@
-"""Day 28: is train_minimal.py's numerical-gradient training correct, how slow is it, and what
-trajectory would it produce?
+"""Day 28: is train_minimal.py's numerical gradient correct, how slow is training with it, and what
+trajectory does the old default setup give with exact gradients?
+
+[PATCH 2026-10-18] train_minimal.py trained with this numerical gradient until 2026-10-18; it now trains with
+backprop (implementation.SimpleCNN.backward) and keeps numerical_gradient as a gradient-checking tool. Items 2
+and 3 describe the old trainer. The forward pass now uses a vectorized im2col, so item 2 prints less than the
+old loop version needed (~15 min per step at batch 1); it times wall-clock, so a busy machine inflates it.
+The W1 error in item 1 (~1e-5) is a kink crossing at h = 1e-5 (a ReLU or max-pool winner flips between
+f(w+h) and f(w-h); CS231n neural-networks-3, "Kinks in the objective"): with h = 1e-6 it drops to ~2e-9.
+The trajectory in 3 is what `train_minimal.py --max-train 200 --max-test 50 --batch-size 8 --momentum 0
+--weight-decay 0 --lr-decay 1 --epochs 3` now prints (validation/day28_backprop_check.py, check 8, compares them).
 
     OMP_NUM_THREADS=1 python validation/day28_numgrad_and_trajectory.py [day_dir]
 (needs CIFAR-10 in <day_dir>/data/cifar-10-batches-py)
