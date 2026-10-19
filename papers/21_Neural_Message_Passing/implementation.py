@@ -301,9 +301,12 @@ class EdgeNetwork(nn.Module):
 # prediction. It must be permutation-invariant (node ordering doesn't matter).
 #
 # We implement two variants:
-# 1. SumReadout: R = MLP(sum(h_v)) — simple but baseline
-# 2. Set2SetReadout: R = Set2Set({h_v}) — LSTM-attention, more expressive
-#    (Section 5.3, from Vinyals et al. 2016)
+# 1. SumReadout: R = MLP(sum(h_v)) — simple; keeps totals, so it suits
+#    extensive targets (the default here)
+# 2. Set2SetReadout: R = MLP(Set2Set({(h_v, x_v)})) — LSTM-attention, the
+#    paper's best QM9 readout (Section 5.3, from Vinyals et al. 2016); its
+#    attention read is a weighted average, so it captures the distribution of
+#    node states but not their total. [PATCH 2026-10-18] (was "more expressive")
 # ============================================================================
 
 
