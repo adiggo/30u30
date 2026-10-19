@@ -48,7 +48,9 @@ class AttentionDecoder(nn.Module):
         
         # TODO: Create the layers
         # 1. Embedding layer
-        # 2. Attention mechanism (use the one from exercise_1 or import from solutions)
+        # 2. Attention mechanism (use the one from exercise_1 or import from solutions):
+        #    query_size = hidden_size, key_size = self.encoder_output_size (2n annotations);
+        #    call it as attention(query, encoder_outputs, mask=src_mask)
         # 3. GRU layer (input = embedding + context)
         # 4. Output layer (input = hidden + context + embedding)
         # 5. Dropout layer
@@ -122,14 +124,16 @@ class SimpleAttention(nn.Module):
         self.key_proj = nn.Linear(key_size, hidden_size, bias=False)
         self.energy = nn.Linear(hidden_size, 1, bias=False)
     
-    def forward(self, query, keys, mask=None):
+    def forward(self, query, keys, values=None, mask=None):
+        # [PATCH 2026-10-18] same signature as exercise_1's AdditiveAttention (values default to keys)
+        values = keys if values is None else values
         query_proj = self.query_proj(query).unsqueeze(1)
         keys_proj = self.key_proj(keys)
         scores = self.energy(torch.tanh(query_proj + keys_proj)).squeeze(-1)
         if mask is not None:
             scores = scores.masked_fill(mask, float('-inf'))
         weights = F.softmax(scores, dim=-1)
-        context = torch.bmm(weights.unsqueeze(1), keys).squeeze(1)
+        context = torch.bmm(weights.unsqueeze(1), values).squeeze(1)
         return context, weights
 
 

@@ -11,7 +11,7 @@ Your Task:
 - Write a comparison report
 
 Learning Objectives:
-1. Understand GRU architecture (3 gates vs 4)
+1. Understand GRU architecture (2 gates + candidate vs the LSTM's 3 gates + candidate)
 2. See trade-offs between complexity and performance
 3. Learn when to use GRU vs LSTM
 4. Appreciate design simplifications
@@ -33,7 +33,8 @@ class GRU:
     """
     Gated Recurrent Unit (GRU) implementation.
     
-    GRU is a simplified version of LSTM with 3 gates instead of 4:
+    GRU is a simplified LSTM: 2 gates (reset, update) plus a candidate, where the LSTM has
+    3 gates (forget, input, output) plus a candidate.  [PATCH 2026-10-18] was "3 gates instead of 4"
     - Reset gate: r_t = σ(W_r·[h_{t-1}, x_t] + b_r)
     - Update gate: z_t = σ(W_z·[h_{t-1}, x_t] + b_z)
     - Candidate: h̃_t = tanh(W·[r_t⊙h_{t-1}, x_t] + b)
@@ -168,7 +169,7 @@ def compare_models(text, char_to_idx, hidden_size=64):
     
     # TODO 12: Create LSTM
     print("\n1. Training LSTM...")
-    # lstm = LSTM(vocab_size, hidden_size, vocab_size)
+    # lstm = LSTM(vocab_size, hidden_size, seq_length=25, learning_rate=0.05)  # [PATCH 2026-10-18] 3rd arg is seq_length
     # lstm_params = count_parameters(lstm)
     # lstm_losses, lstm_times = train_model(lstm, text, char_to_idx)
     
@@ -272,6 +273,6 @@ if __name__ == "__main__":
     # write_comparison_report(results)
     
     print("\nExercise 5 complete.")
-    print("Compare with solutions/solution_05_lstm_vs_gru.py")
+    print("Compare with solutions/exercise_05_solution.py")  # [PATCH 2026-10-18] actual file name
     
     print("\nAll exercises complete. You're ready for Day 3.")

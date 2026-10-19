@@ -84,8 +84,8 @@ def train_model(model, text, char_to_idx, num_iterations=1000):
     seq_length = 25
     learning_rate = 0.001
     
-    h_prev = np.zeros(hidden_size)
-    C_prev = np.zeros(hidden_size)
+    h_prev = np.zeros((hidden_size, 1))  # [PATCH 2026-10-18] column vectors, as implementation.LSTM expects
+    C_prev = np.zeros((hidden_size, 1))
     
     losses = []
     
@@ -218,4 +218,4 @@ if __name__ == "__main__":
     write_conclusions()
     
     print("\nExercise 3 complete.")
-    print("Compare with solutions/solution_03_ablation_study.py")
+    print("Compare with solutions/exercise_03_solution.py")  # [PATCH 2026-10-18] actual file name

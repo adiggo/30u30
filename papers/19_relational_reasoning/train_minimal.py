@@ -189,11 +189,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Day 19: Relation Network Generalization Suite")
     
     # General Parameters
+    # [PATCH 2026-10-18] help text: 'furthest' cannot be learned without --use-coords, and
+    # add_coordinates appends a list-position tag (and 0), not (x, y) coordinates
     parser.add_argument('--mode', type=str, default='count', choices=['furthest', 'count'],
-                        help='Task mode (counting is better for generalization tests)')
+                        help="Task mode: 'count' (points in the top-right quadrant) or 'furthest' "
+                             "(index of the point furthest from the origin; needs --use-coords, since "
+                             "a permutation-invariant RN cannot output a list position)")
     parser.add_argument('--aggregator', type=str, default='sum', choices=['sum', 'mean', 'max'],
                         help='Pooling strategy for relations (sum is standard)')
-    parser.add_argument('--use-coords', action='store_true', help='Inject (x, y) coordinates into objects')
+    parser.add_argument('--use-coords', action='store_true',
+                        help='Append a position tag to each object (implementation.add_coordinates: '
+                             'linspace(-1, 1, N) over list order, plus a 0)')
     
     # Set Size Parameters
     parser.add_argument('--train-n', type=int, default=10, help='Set size during training')
