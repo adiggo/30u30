@@ -1,4 +1,5 @@
-"""
+# [PATCH 2026-10-18] raw docstring: "\mathcal" below is an invalid escape (SyntaxWarning) otherwise
+r"""
 Exercise 4: Normalizing Flows (Breaking the Gaussian Bottleneck)
 
 In this exercise, you will implement the Inverse Autoregressive Flow (IAF)

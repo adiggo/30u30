@@ -3,6 +3,12 @@ Solution 03: Reproducing Posterior Collapse
 
 Experiment showing how a high-capacity decoder without architectural 
 constraints chooses the 'easy' path of ignoring the latent code z.
+
+[PATCH 2026-10-18] What this run shows is the plain ELBO's collapse: the encoder starts near
+q(z|x) = N(0, I) (KL ~0) and the KL never rises. The 3-layer decoder collapses the same way
+without free bits, so depth is not what causes it here; free bits (solution 05,
+implementation.free_bits_loss) is the paper's fix. CPU-sized default: MAX_BATCHES batches
+(one full epoch of the 8-layer model takes over half an hour on one core); 0 = full epoch.
 """
 
 import sys
@@ -15,6 +21,8 @@ import matplotlib.pyplot as plt
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from implementation import VLAE, loss_function
+
+MAX_BATCHES = 60   # [PATCH 2026-10-18] CPU-sized default; 0 = the full epoch
 
 def train_collapsing_vae():
     batch_size = 64
@@ -38,6 +46,8 @@ def train_collapsing_vae():
     
     for epoch in range(epochs):
         for batch_idx, (x, _) in enumerate(loader):
+            if MAX_BATCHES and batch_idx >= MAX_BATCHES:
+                break
             x = x.to(device)
             
             # VLAE forward returns 5 items
@@ -56,10 +66,10 @@ def train_collapsing_vae():
             loss.backward()
             optimizer.step()
             
-            if batch_idx % 100 == 0:
+            if batch_idx % 10 == 0:   # [PATCH 2026-10-18] was every 100 batches
                 print(f"Batch {batch_idx} Loss: {loss.item()/x.size(0):.4f} KL: {kl_history[-1]:.4f}")
 
-    print("Training complete.")
+    print(f"Training complete. KL over the last 10 batches: {sum(kl_history[-10:]) / 10:.4f} nats/image")
     
     plt.plot(kl_history)
     plt.title("KL Divergence (Low/Descending = Collapse)")

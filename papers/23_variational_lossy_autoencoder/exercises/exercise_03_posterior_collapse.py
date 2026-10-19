@@ -33,6 +33,10 @@ def train_collapsing_vae():
     3. Monitor the KL Divergence term.
     
     Expected Result: KL should drop to near 0, meaning the model ignores z.
+
+    [PATCH 2026-10-18] With the plain ELBO (loss_function) this happens with the default 3-layer
+    decoder too: the encoder starts near q(z|x) = N(0, I) and nothing pushes information into z.
+    Exercise 5 adds the paper's free bits.
     """
     
     # Setup Data

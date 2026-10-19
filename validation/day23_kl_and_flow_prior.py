@@ -119,6 +119,9 @@ g = torch.linspace(-half, half, 2001)
 cell = (g[1] - g[0]).item() ** 2
 print(f"[4] min sigma product {s_tot.min():.3f} -> integrating over [-{half:.1f}, {half:.1f}]^2")
 model.encoder = StubEncoder()
+# [PATCH 2026-10-18] the decoder plays no part in log p(z); since z reaches it through a 28x28
+# feature map, decoding 200k grid points per chunk would need several GB, so stub it as well
+model.decode = lambda xx, zz: torch.zeros(len(zz), 1, 1, 1)
 mass_p = mass_o = 0.0
 with torch.no_grad():
     # repo code path: VLAE.forward returns the prior correction for a given z; drive it with grid
