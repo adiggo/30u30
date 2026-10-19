@@ -96,19 +96,26 @@ The paper uses the Penn Treebank (PTB) dataset (929K training words, 73K validat
 
 | Model | Parameters | Validation | Test |
 |-------|-----------|-----------|------|
-| Non-regularized LSTM (small) | ~2M | 120.7 | 114.5 |
-| **Medium regularized LSTM** | **~4.6M** | **86.2** | **82.7** |
-| **Large regularized LSTM** | **~13.8M** | **82.2** | **78.4** |
-| Previous best (Pascanu et al. 2013) | -- | -- | 107.5 |
+| Non-regularized LSTM (2 x 200) | ~4.65M | 120.7 | 114.5 |
+| **Medium regularized LSTM (2 x 650)** | **~19.8M** | **86.2** | **82.7** |
+| **Large regularized LSTM (2 x 1500)** | **~66.0M** | **82.2** | **78.4** |
+| Previous single models: Pascanu et al. (2013) / Cheng et al. | -- | -- | 107.5 / 100.0 |
 
-The jump from 114.5 to 78.4 test perplexity is massive. And the previous state-of-the-art was 107.5 — the large regularized model beats it by nearly 30 points.
+The jump from 114.5 to 78.4 test perplexity is massive. The best previous single model in Table 1 (Cheng et al., 100.0) is beaten by about 22 points.
 
 Without dropout, larger models overfit badly. With the paper's dropout scheme, bigger models keep improving — demonstrating that the regularization actually works.
 
 ### Architecture Details (From Section 4.1)
 
+All models: unrolled for 35 steps (20 for the non-regularized one), minibatch 20, hidden state initialized to zero and then carried from one minibatch to the next (successive minibatches traverse the training set in order).
+
+**Non-regularized LSTM (the baseline; "larger networks overfit"):**
+- 2 layers, 200 hidden units per layer, weights uniform in [-0.1, 0.1]
+- No dropout
+- 4 epochs at learning rate 1, then the rate is halved after each epoch, 13 epochs in total
+
 **Medium LSTM:**
-- 2 layers, 650 hidden units per layer
+- 2 layers, 650 hidden units per layer, parameters uniform in [-0.05, 0.05]
 - 50% dropout (keep_prob = 0.5)
 - Trained for 39 epochs
 - SGD with learning rate 1.0
@@ -118,7 +125,7 @@ Without dropout, larger models overfit badly. With the paper's dropout scheme, b
 - Batch size 20
 
 **Large LSTM:**
-- 2 layers, 1500 hidden units per layer
+- 2 layers, 1500 hidden units per layer, parameters uniform in [-0.04, 0.04]
 - 65% dropout (keep_prob = 0.35)
 - Trained for 55 epochs
 - SGD with learning rate 1.0
@@ -129,30 +136,31 @@ Without dropout, larger models overfit badly. With the paper's dropout scheme, b
 
 ### Speech Recognition (Section 4.2)
 
-Tested on an Icelandic speech recognition dataset (84 hours of training data). The regularized model improved word error rate, demonstrating the technique generalizes beyond language modeling.
+Tested on an internal Google Icelandic speech dataset (93k utterances, small enough that overfitting is a concern). The paper reports frame accuracy, not word error rate: validation frame accuracy rose from 68.9% to 70.5% with dropout, while training accuracy fell from 71.6% to 69.4%, the usual signature of a regularizer (Table 2).
 
 ### Machine Translation (Section 4.3)
 
-Applied to WMT'14 English-to-French translation using a deep LSTM encoder-decoder:
+Applied to WMT'14 English-to-French translation (an LSTM trained on concatenated source and target sentences):
 - 4 layers, 1000 hidden units per layer
 - 20% dropout
-- BLEU score: **29.03** (up from 25.87 without dropout)
+- BLEU score: **29.03** (up from 25.9 without dropout)
 
-This is notable — a 3-point BLEU improvement from dropout alone, on a task that already had a lot of training data (12M sentence pairs).
+This is notable — a 3-point BLEU improvement from dropout alone, on a task that already had a lot of training data (the "selected" WMT'14 subset: 340M French and 304M English words).
 
-### Image Caption Generation (Section 4.3, briefly)
+### Image Caption Generation (Section 4.4)
 
-Also tested on MS COCO image captioning. The regularized LSTM outperformed the non-regularized version when used as the language model in a caption generation pipeline.
+Also tested on MS COCO image captioning (Table 4). Dropout improved a single model (BLEU 23.5 to 24.3), but an ensemble of 10 non-regularized models reached 24.4: "the main effect of dropout is to produce a single model that is as good as an ensemble."
 
 ---
 
 ## Generated Text Sample (Figure 4)
 
-The paper includes a sample from the regularized model, trained on PTB:
+The paper's Figure 4 shows samples from a large regularized model conditioned on "The meaning of life is" (with "unk", "N" and "$" removed from the permissible words), for example:
 
-> "The meaning of life is the tradition of the ancient human reproduction: it is less favorable to the whole course of the individual than to the evolution of the ancient world..."
+> "the meaning of life is that only if an end would be of the whole supplier. widespread rules are regarded as the companies of refuses to deliver. in balance of the nation 's information and loan growth associated with the carrier thrifts are in the process of slowing the seed and commercial paper."
 
 It's not coherent, but the grammar and vocabulary are remarkably fluid for a word-level language model from 2014. The paper notes this as a qualitative demonstration.
+
 
 ---
 
@@ -201,6 +209,8 @@ Our code goes beyond what the paper covers. We implement:
 4. **Early stopping** — not in the paper, but a standard technique
 
 This is deliberate: the paper solved one specific problem, but a practical regularized RNN uses multiple techniques together. The exercises cover all four because they're all worth understanding.
+
+The paper's own model is implemented too: `LSTMLanguageModel` in `implementation.py` (word embeddings, 2 LSTM layers, softmax; dropout on the three non-recurrent connections; truncated BPTT; global gradient-norm clipping; plain SGD with the paper's learning-rate decay) uses none of the three additions. `train_minimal.py` trains it on Penn Treebank at CPU scale (2 x 200 units on a slice of the training set instead of 2 x 650 / 2 x 1500 on all of it); the README's "Our CPU Reproduction" section lists what the paper used, what we use, and the perplexities we got.
 
 ---
 

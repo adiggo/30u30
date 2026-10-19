@@ -200,7 +200,7 @@ Exercise 1 is grounded in the Zaremba et al. (2014) paper. Exercises 2-5 go beyo
 
 1. Implement `train_one_epoch()`:
    - Set `training=True`
-   - Apply dropout to hidden states
+   - Apply dropout to the input `x_t` only, never to the hidden state carried to the next step (the paper's rule)
    - Add L2 penalty to loss
    - Compute average loss across sequences
 
