@@ -210,7 +210,7 @@ analyze_gate_patterns(gates_dict, sequence_text)
 |-------------|---------------------------------------|----------------------------------|-----------------------------|
 | **LSTM**    | Medium sequences (10-100 steps)       | Solves vanishing gradients       | Slower than GRU             |
 |             | Interpretable gates needed            | Well-studied, stable             | Can't handle very long seqs |
-| **GRU**     | Similar to LSTM                       | Faster (3 gates vs 4)            | Slightly less powerful      |
+| **GRU**     | Similar to LSTM                       | Fewer parameters (2 gates vs 3)  | Slightly less powerful      |
 |             | When speed matters                    | Simpler architecture             |                             |
 | **Vanilla RNN** | Very short sequences (<10 steps)  | Simple, fast                     | Vanishing gradients         |
 |             | Real-time processing                  | Low memory                       | Can't learn long deps       |

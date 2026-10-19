@@ -164,9 +164,11 @@ def compare_with_rnn(distances):
     Optional: Compare LSTM with vanilla RNN.
     
     TODO 10 (BONUS): Implement vanilla RNN and compare
-    - RNN should fail beyond ~10 steps
-    - LSTM should succeed up to 50+ steps
+    - Train both on the same sequences and measure; use several seeds, since the vanilla
+      RNN's accuracy at a given distance can swing widely with the seed
     - Plot both on same graph
+    [PATCH 2026-10-18] the old hints ("LSTM should succeed up to 50+ steps") are not what the
+    reference solution measures with 3,000 training sequences (chance at 50 for both models)
     """
     print("\nBonus: Comparing with vanilla RNN...")
     print("(Not implemented - try it yourself!)")
@@ -217,4 +219,4 @@ if __name__ == "__main__":
     # compare_with_rnn(distances)
     
     print("\nExercise 4 complete.")
-    print("Compare with solutions/solution_04_long_range_deps.py")
+    print("Compare with solutions/exercise_04_solution.py")  # [PATCH 2026-10-18] actual file name

@@ -66,21 +66,18 @@ These solutions are here to help you **learn**, not to copy-paste. Here's the re
 **File:** `exercise_03_solution.py`  
 **Difficulty:** Medium  
 **What's included:**
-- `VanillaRNN` class (baseline)
-- `LSTMNoForgetGate` class (f = 1 always)
-- `LSTMNoInputGate` class (i = 1 always)
-- `LSTMNoOutputGate` class (o = 1 always)
-- `run_ablation_study()` - train all 5 variants
-- `analyze_results()` - performance comparison
-- `visualize_comparison()` - comprehensive 4-panel plots
+- `VanillaRNN` class (baseline, with its own BPTT `backward()`)
+- `LSTMNoForget`, `LSTMNoInput`, `LSTMNoOutput`: `implementation.LSTM` with one gate fixed to 1; they reuse its `backward()` and Adagrad update
+- `run_ablation_study()` - trains all 5 variants with the same seed, windows and optimizer, and measures held-out loss
+- `analyze_results()` - per-seed comparison with the full LSTM
+- `visualize_comparison()` - loss curves and measured bars (`--plot PATH`)
 
-**Key learning points:**
-- Forget gate is most critical (prevents gradient explosion)
-- Input gate prevents saturation
-- Output gate provides control
-- All gates work together for optimal performance
+**Measured (3 seeds, 1,200 updates each, about 1 minute):** removing the forget gate costs about
++0.14 nats/char of held-out loss in every seed; removing the input or the output gate, or using a
+vanilla RNN, is within seed noise on this 4k-character corpus. Gradients are checked by
+`validation/day02_solution_grads.py`.
 
-**Lines of code:** ~500 lines  
+**Lines of code:** ~430 lines  
 **Study time:** 2-3 hours
 
 ---
@@ -89,21 +86,18 @@ These solutions are here to help you **learn**, not to copy-paste. Here's the re
 **File:** `exercise_04_solution.py`  
 **Difficulty:** Medium  
 **What's included:**
-- `generate_copy_task()` - memorize and reproduce sequences
-- `generate_delayed_xor_task()` - remember two bits over delay
-- `train_on_memory_task()` - training loop
-- `evaluate_memory_capacity()` - test at different delays
-- `analyze_cell_state_evolution()` - track cell state changes
-- `visualize_memory_capacity()` - accuracy vs delay plots
-- `visualize_cell_state()` - cell state heatmaps
+- `generate_memory_task()` - the exercise's "remember the first character" task
+- `train_on_distance()` / `test_all_distances()` - a fresh model per distance, tested on held-out sequences
+- `generate_delayed_xor_task()`, `train_on_memory_task()`, `evaluate_memory_capacity()` - delayed XOR with distractor bits, one model tested at other delays (`--xor`)
+- `analyze_cell_state_evolution()`, `forget_gates_during_delay()` - what the trained cell holds
+- `generate_copy_task()` - a copy-task generator (not trained here)
 
-**Key learning points:**
-- LSTM memory capacity limits
-- Cell state stability during retention
-- Performance degrades gracefully with longer delays
-- Why LSTMs handle long-range dependencies better than RNNs
+**Measured (3 seeds, 3,000 training sequences per model, 1-2 minutes):** the LSTM is near-perfect at
+5 steps, about 92% at 10 and about 49% at 20 (chance 10%); the vanilla RNN learns 5 steps, but at 10
+and 20 its accuracy swings with the seed (54/99/50% and 90/8/9%). Neither learns 50 steps in this
+budget. The trained LSTM keeps a few units with forget gates near 1 (the memory) while most forget.
 
-**Lines of code:** ~400 lines  
+**Lines of code:** ~420 lines  
 **Study time:** 2-3 hours
 
 ---
@@ -112,20 +106,17 @@ These solutions are here to help you **learn**, not to copy-paste. Here's the re
 **File:** `exercise_05_solution.py`  
 **Difficulty:** Hard  
 **What's included:**
-- Complete `GRU` class implementation from scratch
-- `compare_lstm_gru()` - side-by-side training
-- `analyze_comparison()` - comprehensive analysis
-- `visualize_comparison()` - 4-panel comparison
-- Performance, speed, and parameter count metrics
+- `GRU` class from scratch (forward, BPTT backward, the same Adagrad rule as the LSTM)
+- `count_parameters()` for both models
+- `compare_lstm_gru()` - both models on the same windows with the same optimizer
+- `analyze_comparison()` and `visualize_comparison()` - measured parameters, speed and loss
 
-**Key learning points:**
-- GRU simplification: 2 gates vs 3, single state vs dual
-- GRU has 25-30% fewer parameters
-- GRU trains 10-20% faster
-- Similar final performance on most tasks
-- When to use each architecture (LSTM for very long sequences, GRU for speed)
+**Measured (hidden 32, 3 seeds, 1,200 updates each, under a minute):** the GRU has 21.6% fewer
+parameters (2 gates plus a candidate, versus 3 gates plus a candidate), is about 1.2x faster per
+update in NumPy, and reached a lower held-out loss in every seed (by 0.02-0.09 nats/char) at this
+early stage of training. Larger studies found the two comparable (Chung et al. 2014).
 
-**Lines of code:** ~600 lines  
+**Lines of code:** ~320 lines  
 **Study time:** 3-4 hours
 
 ---
