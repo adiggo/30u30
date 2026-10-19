@@ -39,8 +39,9 @@ Compress the fine-grained (original) binary grid. Monotonically increases.
 
 ### Apparent Complexity Estimate (proxy for K(f(x)))
 ```python
-# Step 1: Coarse-grain — average over g x g blocks
-coarse = average_blocks(grid, grain_size=g)
+# Step 1: Coarse-grain (Sec. 5.1) — replace every cell by the mean of the
+# g x g window centred on it (output stays N x N; edge windows use in-bounds cells)
+coarse = coarse_grain(grid, grain_size=g)   # repo default g = 7 (DEFAULT_GRAIN)
 
 # Step 2: Threshold into discrete buckets
 # Section 5: 3 buckets (0, 0.5, 1)
@@ -50,7 +51,9 @@ thresholded = threshold(coarse, num_buckets)
 # Step 3: Compress
 complexity = len(gzip.compress(thresholded.tobytes(), compresslevel=9))
 ```
-Rises then falls for interacting model. Stays flat for non-interacting (after adjustment).
+Paper: rises then falls for both models with 3 buckets (Sec. 5.2); after the Sec. 6
+adjustment the non-interacting curve is "flattened to a lower value" (not reproduced
+at n = 50 in this repo: there both rise and fall and the non-interacting peak is higher).
 
 ### Adjusted Coarse-Graining (Section 6)
 ```python
@@ -61,7 +64,8 @@ for each row in thresholded:
         if abs(cell - majority_value) <= 1 bucket:
             cell = majority_value
 ```
-Removes border pixel artifacts. Non-interacting complexity drops to near zero.
+Aims to remove flicker of cells sitting on a bucket border. Paper: non-interacting curve
+"flattened to a lower value" (Sec. 6.2).
 
 ---
 
@@ -89,13 +93,13 @@ Grain size needed: $L \gg G\sqrt{3 \ln(2n^2)}$
 
 ## Scaling Results (Figures 6-8)
 
-| Quantity | Scaling | Fit $r^2$ |
-|----------|---------|-----------|
-| Max entropy | ~ $n^2$ (quadratic) | 0.9999 |
-| Max complexity (interacting) | ~ $n$ (linear) | 0.9798 |
-| Max complexity (non-interacting) | ~ $n$ (linear) | 0.9729 |
-| Time to max complexity (interacting) | ~ $n^2$ (quadratic) | 0.9878 |
-| Time to max complexity (non-interacting) | ~ $n^2$ (quadratic) | 0.9927 |
+| Quantity | Scaling | Fit $r^2$ | Re-run here (interacting, n = 20-120, g = 7) |
+|----------|---------|-----------|------------------|
+| Max entropy | ~ $n^2$ (quadratic) | 0.9999 | quadratic, $r^2$ 1.0000 |
+| Max complexity (interacting) | ~ $n$ (linear) | 0.9798 | grows: linear $r^2$ 0.966, power law ~ $n^{1.5}$ |
+| Max complexity (non-interacting) | ~ $n$ (linear) | 0.9729 | not re-run |
+| Time to max complexity (interacting) | ~ $n^2$ (quadratic) | 0.9878 | quadratic $r^2$ 0.987, but ~ $n^{4.1}$ in swaps |
+| Time to max complexity (non-interacting) | ~ $n^2$ (quadratic) | 0.9927 | not re-run |
 
 Why max complexity ~ n: complexity develops along the 1D boundary between coffee and cream.
 Why max entropy ~ n^2: entropy counts all n^2 particles.
@@ -133,8 +137,10 @@ from implementation import gzip_size, coarse_grain, threshold_array
 # Raw gzip size of any data
 size = gzip_size(data_bytes)
 
-# Coarse-grain a grid
-coarse = coarse_grain(grid, grain_size=10)
+# Coarse-grain a grid: paper's centred window, N x N output
+coarse = coarse_grain(grid, grain_size=7)
+# The earlier non-overlapping block average ((N//g) x (N//g)), for comparison only
+blocks = coarse_grain(grid, grain_size=7, method='block')
 
 # Threshold into buckets
 discrete = threshold_array(coarse, num_buckets=7)
@@ -161,7 +167,8 @@ discrete = threshold_array(coarse, num_buckets=7)
 4. **Non-interacting needs count grid**: Particles overlap, so use uint16, not uint8
 5. **"Entropy" in this paper = gzip(fine-grained)**: Not Shannon entropy formula
 6. **3-bucket thresholding has artifacts**: Use 7-bucket + adjustment for reliable results
-7. **Grain size matters**: Too small = noise not smoothed. Too large = structure erased. Default: g = n/10.
+7. **Grain size matters**: Too small = noise not smoothed. Too large = structure erased. Default here: g = 7 for every n (a 7 x 7 mean of 0/1 cells at density 1/2 has sd 0.07, so a mixed cup no longer flickers across the 3-bucket edges at 0.25 / 0.75).
+8. **Coarse-graining is a sliding window, not downsampling**: averaging non-overlapping g x g blocks gives a (N/g) x (N/g) array; with g = N/10 that is 10 x 10 at every N and max complexity cannot grow with N.
 
 ---
 

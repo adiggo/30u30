@@ -22,7 +22,7 @@ The paper does three things:
 
 3. **Runs the experiment** — measures both entropy (gzip of fine-grained state) and apparent complexity (gzip of coarse-grained state) over time, for both an "interacting" model (particles can't overlap — the main one) and a "non-interacting" model (cream particles random-walk independently).
 
-The key empirical result (Figures 2, 10): for the interacting model, complexity rises then falls. For the non-interacting model, complexity stays flat (once thresholding artifacts are removed). This difference matters — it says that *interactions* are what create macroscopic complexity.
+The key empirical results (Figures 2, 10): with the basic 3-bucket measure, complexity rises then falls for *both* models. After the Section 6 adjustment the interacting model keeps its hump, while the non-interacting curve is "flattened to a lower value" (Sec. 6.2). The authors read this as evidence that *interactions* are what create macroscopic complexity. It is numerical evidence only, and our re-run does not reproduce the contrast at n = 50 (see "Reproduction in this repo").
 
 The paper also proves analytically (Appendix, Section 9) that the non-interacting model's apparent complexity never becomes large, using Chernoff bounds on the expected cream distribution.
 
@@ -48,7 +48,7 @@ The central hypothesis from Day 6, now tested experimentally:
                   (monotonically increasing)
 ```
 
-"Apparent complexity" = the Kolmogorov complexity of a smoothed (coarse-grained) version of the state. In practice: blur the bitmap by averaging over local squares, threshold into discrete buckets, and compress with gzip. The compressed size is the complexity estimate.
+"Apparent complexity" = the Kolmogorov complexity of a smoothed (coarse-grained) version of the state. In practice: blur the bitmap by replacing each pixel with the average of the g x g square centred on it, threshold into discrete buckets, and compress with gzip. The compressed size is the complexity estimate.
 
 **Why coarse-graining works**: A totally ordered state (all coffee on bottom, all cream on top) compresses well at any scale. A totally random state (uniform mixture) compresses well at the coarse-grained level because averaging turns local randomness into a uniform gray. But in between — when you have tendrils and boundaries — the coarse-grained representation has genuine, incompressible structure.
 
@@ -87,8 +87,7 @@ The paper tried three approaches to estimate complexity:
 3. **Direct coarse-graining** — compress the coarse-grained state directly with gzip. This worked. Entropy is estimated by gzip of the fine-grained state; complexity by gzip of the coarse-grained state.
 
 The coarse-graining procedure (Section 5.1):
-- Divide the N x N grid into g x g squares (g = grain size)
-- Average the values in each square
+- Replace every cell by the average of the g x g square centred on it (g = grain size). The result is still N x N, one average per cell (Fig. 1); windows that stick out of the grid average their in-bounds cells
 - Threshold the floating-point averages into discrete buckets (3 buckets in Section 5, 7 buckets in Section 6)
 - Compress the thresholded array with gzip
 - The compressed size = estimated apparent complexity
@@ -99,7 +98,7 @@ Method: 3-bucket thresholding (areas that are mostly coffee, mostly cream, or mi
 
 Results (Figure 2):
 - **Interacting model**: Complexity rises then falls. Entropy increases monotonically. The complexity peak occurs at the time when there are interesting macroscopic structures (tendrils of cream reaching into coffee and vice versa).
-- **Non-interacting model**: Also showed rising-then-falling complexity, BUT this turns out to be an artifact of the thresholding (border pixels fluctuating between bucket values).
+- **Non-interacting model**: Also showed rising-then-falling complexity. The authors later attribute this to the thresholding ("We believe thresholding artifacts caused the apparent increase", Sec. 6.2): border pixels fluctuating between bucket values.
 
 Scaling behavior (Figures 6-8):
 - Max entropy scales as n^2 (quadratic — proportional to number of particles)
@@ -116,9 +115,9 @@ To address thresholding artifacts, the authors:
 
 Results (Figure 10):
 - **Interacting model**: Still shows the rise-and-fall pattern. The complexity curve is preserved.
-- **Non-interacting model**: Complexity flattened to near zero. The previous rise-and-fall was entirely a thresholding artifact.
+- **Non-interacting model**: The complexity curve is "flattened to a lower value" (Sec. 6.2).
 
-This is the paper's most important empirical finding: **complexity requires interaction**. Non-interacting particles produce no macroscopic structure because each is an independent random walk. The expected distribution can be predicted from the initial conditions plus time, so the coarse-grained state has low KC at all times.
+The paper's reading of this is that **complexity requires interaction**: non-interacting particles produce no macroscopic structure because each is an independent random walk, so the expected distribution can be predicted from the initial conditions plus time and the coarse-grained state has low KC at all times (proven in the Appendix for large grains). For the interacting model this is numerical evidence; proving it is the paper's open problem.
 
 ### Analytical Result (Section 9, Appendix)
 
@@ -129,6 +128,33 @@ The expected number of cream particles at position (x,y) satisfies:
 $$E[a_{t+1}(x,y)] = \frac{E[a_t(x-1,y)] + E[a_t(x+1,y)] + E[a_t(x,y-1)] + E[a_t(x,y+1)]}{4}$$
 
 Using Chernoff bounds, they show that in any L x L square B, the actual count stays close to the expected count with high probability, provided the grain size L >> G * sqrt(3 * ln(2n^2)). This means the coarse-grained image can be reconstructed from n and t alone, so its KC is at most O(log n + log t).
+
+### Reproduction in This Repo (2026-10-18)
+
+The coarse-graining is now the paper's centred window (`coarse_grain(grid, g)`, N x N output). `validation/day07_window_coarse_graining.py` checks it against a direct loop over every window (exact) and against the paper's Fig. 1 (23 of its 25 printed values; the other two look like typos). The repo's earlier block average stays available as `coarse_grain(grid, g, method='block')`. We use one grain, g = 7, for every N (the paper does not report its g). Numbers below come from `train_minimal.py` and `validation/day07_paper_experiments.py`. S5 = 3 buckets (Sec. 5); S6 = 7 buckets + row-majority adjustment (Sec. 6).
+
+- **Rise and fall (interacting, 50 x 50, 3 seeds).** S5: 42 -> 242 -> 46 bytes. S6: 52 -> 78 -> 49 bytes, a weaker and noisier hump (the paper calls its adjusted metric "somewhat noisier"). Block averaging (g = 5) gives 26 -> 55 -> 26 bytes.
+- **Scaling (Figs. 6-8; interacting, n = 20-120, 2 seeds; `--scaling --large`, about 4 minutes).**
+
+  | n | 20 | 40 | 60 | 80 | 100 | 120 |
+  |---|---|---|---|---|---|---|
+  | max entropy (bytes) | 118 | 332 | 671 | 1137 | 1723 | 2441 |
+  | max complexity, S5 | 75 | 169 | 330 | 513 | 755 | 1064 |
+  | max complexity, S6 | 52 | 70 | 103 | 114 | 138 | 173 |
+  | time to S5 peak (swaps) | 6.1e3 | 9.5e4 | 5.2e5 | 1.8e6 | 4.3e6 | 9.4e6 |
+
+  - **Entropy (Fig. 6):** quadratic, r^2 = 1.0000.
+  - **Max complexity (Fig. 7):** now grows with n, as in Fig. 7. A straight line fits with r^2 = 0.966 for S5 (paper: 0.98) and 0.983 for S6. A power law fits S5 better, about n^1.5. With block averaging at the earlier default g = n/10, the coarse array is 10 x 10 at every n and max complexity does not grow. At the same fixed g = 7 it grows about 13x more slowly than with the window (0.48 vs 6.25 bytes per unit n, n = 20-60).
+  - **Time to peak (Fig. 8):** a quadratic fits with r^2 = 0.987 (paper: 0.988), yet the time grows as n^4.1 in swaps (n^2 in batches). That is diffusive: about n^2 sweeps of n^2 swaps each. At n = 100 the peak comes at 4.3e6 swaps; the paper's Fig. 3 shows 8e6. A polynomial fit with free coefficients cannot tell n^2 from n^4 over this range.
+- **Interacting vs non-interacting (50 x 50, 3 seeds).** Both models rise and fall under both metrics. After the Sec. 6 adjustment, the non-interacting peak is the *higher* one:
+  - g = 7: 198 bytes on particle counts, 99 on occupancy, vs 78 for the interacting model;
+  - g = 9: 132 / 69 vs 64.
+
+  So the paper's Sec. 6.2 contrast is not reproduced at this size. Two reasons:
+  - The Appendix guarantee needs grains L >> G sqrt(3 ln 2n^2), about 35 cells here.
+  - Particle counts fluctuate more than 0/1 cells (variance about rho vs rho(1 - rho)).
+
+  Also, the interacting model's *mean* density obeys the same discrete heat equation as the walkers'. Swapping a uniformly random adjacent pair gives E[x_{t+1}(v)] = x_t(v) + (1/E) sum over neighbours w of (x_t(w) - x_t(v)), which is linear; the paper's chain is this one watched only when it changes. So at coarse scales the two models differ in their fluctuations, not in their average profile.
 
 ### What They Chose NOT to Measure (Section 2)
 
@@ -146,19 +172,21 @@ They chose **apparent complexity** for a simple reason: "we did not know of any 
 
 ### Key Decisions
 
-**The swap rule matters**: One swap per step in the interacting model meant the original paper needed tens of millions of steps for a 100x100 grid. Our implementation uses batch swaps (multiple non-conflicting swaps per step) to speed this up while preserving the qualitative behavior. The paper's source code was written in Python by Lauren Ouellette.
+**The swap rule matters**: One swap per step in the interacting model meant the original paper needed tens of millions of steps for a 100x100 grid. Our implementation uses batch swaps to speed this up while preserving the qualitative behavior. Each step applies a set of disjoint swaps of differing neighbours (pairs that collide inside a batch are dropped, so particles are conserved), about 0.07 N^2 swaps once mixing is under way. `ca.swaps` and `results['paper_time']` give time in the paper's unit (one swap). The paper's source code was written in Python by Lauren Ouellette.
 
 **gzip level consistency**: Use the same compression level throughout. The paper showed (Figure 5) that different compressors (gzip, bzip2, etc.) produce qualitatively similar curves. We use `gzip.compress(data, compresslevel=9)`.
 
-**Grain size selection**: The paper doesn't specify exactly how they chose g. Too small and the coarse-graining doesn't smooth out noise. Too large and it erases all structure. A reasonable default is g = n/10 (for a 100x100 grid, g = 10).
+**Grain size selection**: The paper doesn't specify exactly how they chose g. Too small and the coarse-graining doesn't smooth out noise. Too large and it erases all structure. We use g = 7 for every grid size (`DEFAULT_GRAIN`). A 7 x 7 average of 0/1 cells at density 1/2 has standard deviation 0.5/7 = 0.07, so a well-mixed cup sits 3.5 standard deviations from the 3-bucket edges (0.25, 0.75) and its coarse image is uniform. At g = 5 (2.5 sd) about 1% of cells keep flickering and the curves never fall back. A fixed grain also matches the paper's "human observer from a few feet away". The earlier default g = n/10 is too small for small grids, and with block averaging it fixes the coarse array at 10 x 10.
 
-**Border pixel artifacts**: The whole point of Section 6 was to fix these. The 3-bucket version showed fake complexity in the non-interacting model. The 7-bucket + majority adjustment fixed it. Our implementation includes both versions.
+**Non-interacting state**: The non-interacting model is measured on the particle *count* per cell, the state array of Sec. 3.2 and what the Appendix coarse-grains. Earlier versions measured occupancy (count > 0).
+
+**Border pixel artifacts**: The whole point of Section 6 was to fix these. The paper reports that the 3-bucket version showed fake complexity in the non-interacting model and that the 7-bucket + majority adjustment removed it. Our implementation includes both versions (at 50 x 50 the adjustment lowers both models' curves; see above).
 
 ### Things That Will Bite You
 
 1. **gzip of binary data, not strings**: Convert the numpy array to bytes before compressing. `grid.tobytes()` or saving as a bitmap format.
 
-2. **Thresholding**: After averaging a g x g block, you get floats. Threshold into discrete buckets BEFORE compressing. The paper uses 3 buckets (Section 5) and 7 buckets (Section 6).
+2. **Thresholding**: After averaging the g x g window around each cell, you get floats. Threshold into discrete buckets BEFORE compressing. The paper uses 3 buckets (Section 5) and 7 buckets (Section 6).
 
 3. **Entropy is NOT Shannon entropy here**: The paper uses "entropy" to mean gzip-compressed size of the fine-grained state, not the standard information-theoretic formula. This is a KC proxy.
 
@@ -173,21 +201,25 @@ They chose **apparent complexity** for a simple reason: "we did not know of any 
 ### Quick Start
 
 ```bash
-python train_minimal.py --grid-size 50 --steps 100000 --model interacting
+python train_minimal.py
 ```
 
-This runs the coffee automaton, measures entropy and apparent complexity at each snapshot, and plots the rise-and-fall curve.
+This runs the 50x50 interacting automaton for 4 N^2 = 10,000 batches (about 10 s), measures entropy and apparent complexity (7 x 7 window, 7 buckets + adjustment) at each snapshot, and plots the rise-and-fall curve.
 
 More options:
 ```bash
 # Compare interacting vs non-interacting
-python train_minimal.py --grid-size 50 --steps 100000 --compare-models
+python train_minimal.py --compare-models
 
-# Run the adjusted coarse-graining (Section 6)
-python train_minimal.py --grid-size 50 --steps 100000 --adjusted
+# Section 5 (3 buckets) vs Section 6 (7 buckets + row-majority adjustment)
+python train_minimal.py --compare-methods
 
-# Scaling experiment: how does max complexity scale with grid size?
-python train_minimal.py --scaling --sizes 20 30 50 70 100
+# Scaling experiment: how does max complexity scale with grid size? (n = 20..60, ~1 min)
+python train_minimal.py --scaling --no-plot
+# Larger grids, n = 20..120 (~4-10 min on one core)
+python train_minimal.py --scaling --large --no-plot
+# The earlier block averaging, for comparison
+python train_minimal.py --scaling --coarse block --no-plot
 ```
 
 ### Exercises
@@ -212,11 +244,11 @@ Solutions are in `exercises/solutions/`. Try to get stuck first.
 
 2. **Complexity rises then falls; entropy only rises.** For the interacting coffee automaton, gzip(coarse-grained) peaks at intermediate times while gzip(fine-grained) increases monotonically. This is the central empirical result. (Figures 2, 10)
 
-3. **Interactions create complexity; independence does not.** The non-interacting model never develops genuine macroscopic complexity. Each particle's position is an independent random walk, so the expected coarse-grained state can be predicted from initial conditions alone, giving O(log n) KC. (Section 6, Appendix)
+3. **The paper's claim: interactions create complexity, independence does not.** For independent random walkers the expected coarse-grained state can be predicted from initial conditions alone, so for large enough grains its KC is O(log n + log t) (Appendix, proven). For the interacting model the paper has numerical evidence only (Section 6). At 50 x 50 our re-run does not show the contrast (see "Reproduction in this repo").
 
-4. **Max complexity scales linearly with grid size; max entropy scales quadratically.** Complexity develops along the one-dimensional coffee-cream boundary (so ~ n). Entropy counts all particles (so ~ n^2). Time to peak complexity ~ n^2. (Figures 6-8)
+4. **Max complexity grows with grid size; max entropy grows quadratically.** The paper fits max complexity linearly in n (complexity develops along the one-dimensional coffee-cream boundary), max entropy quadratically (it counts all particles), and time to peak quadratically (Figures 6-8). The re-run confirms entropy and the growth of max complexity, but time to peak grows as ~n^4 in swaps: a good polynomial fit is not a scaling law.
 
-5. **Thresholding artifacts are a real problem.** The naive 3-bucket coarse-graining showed fake complexity in the non-interacting model. The 7-bucket + row-majority adjustment removed it. This is why Section 6 exists and why the adjusted method is more trustworthy. (Section 6)
+5. **Thresholding artifacts are a real problem.** Cells on a bucket border flicker between buckets and add compressed bytes that are not structure. Section 6's 7 buckets + row-majority adjustment is the paper's fix; the grain size matters at least as much (Section 6, Appendix).
 
 ---
 

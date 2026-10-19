@@ -111,7 +111,7 @@ What they tried:
 ### Coarse-Graining Experiment — 3 Buckets (Section 5)
 
 Method:
-- Average values in g x g squares
+- Replace each cell by the average of the g x g square centred on it (the coarse array is still n x n; Fig. 1)
 - Threshold into 3 buckets: mostly coffee (near 0), mixed (near 0.5), mostly cream (near 1)
 - Compress with gzip
 - Complexity = compressed size of thresholded coarse-grained array
@@ -120,7 +120,7 @@ Method:
 Results:
 - Both interacting and non-interacting models show complexity rising then falling
 - Entropy increases monotonically in both
-- BUT the non-interacting result turns out to be an artifact
+- BUT the authors believe the non-interacting rise is a thresholding artifact (Sec. 6.2: "We believe thresholding artifacts caused the apparent increase")
 
 Scaling (Figures 6-8):
 - Max entropy ~ $n^2$ (quadratic, proportional to particle count)
@@ -137,9 +137,9 @@ Fix:
 
 Results:
 - **Interacting model**: Complexity curve preserved. Rise-and-fall still appears.
-- **Non-interacting model**: Complexity flattened to nearly zero. The previous rise was entirely a thresholding artifact.
+- **Non-interacting model**: the complexity curve is "flattened to a lower value" (Sec. 6.2).
 
-This is the paper's most significant empirical finding.
+This is the paper's most significant empirical finding. It is numerical evidence only, and this repo's re-run at n = 50 does not reproduce it (README, "Reproduction in this repo").
 
 ### The Proof for Non-Interacting (Appendix, Section 9)
 
@@ -171,7 +171,9 @@ $$C_{\text{apparent}}(x) = K(f(x))$$
 
 where $f$ is the coarse-graining function. In practice:
 
-$$\hat{C}(x) = \text{len}(\text{gzip}(\text{threshold}(\text{avg\_blocks}(x, g))))$$
+$$\hat{C}(x) = \text{len}(\text{gzip}(\text{threshold}(\text{window\_mean}(x, g))))$$
+
+where window_mean replaces every cell by the mean of the g x g square centred on it (Sec. 5.1).
 
 ### Sophistication (for reference)
 

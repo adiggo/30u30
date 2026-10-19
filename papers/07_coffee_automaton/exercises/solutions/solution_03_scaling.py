@@ -10,10 +10,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from implementation import run_simulation
 
 
-def scaling_experiment(sizes=None, steps_multiplier=40):
-    """Run simulations at multiple grid sizes and collect scaling data."""
+def scaling_experiment(sizes=None, steps_multiplier=4, grain_size=7):
+    """Run simulations at multiple grid sizes and collect scaling data.
+
+    [PATCH 2026-10-18] Paper's Sec. 5 metric (centred window, one grain for every n,
+    3 buckets, no adjustment), 4 n^2 batches per run (was 40 n^2 with the 7-bucket
+    adjusted metric and the run_simulation default grain).
+    """
     if sizes is None:
-        sizes = [10, 20, 30, 50]
+        sizes = [20, 30, 40, 50]
 
     max_entropy = []
     max_complexity = []
@@ -21,10 +26,11 @@ def scaling_experiment(sizes=None, steps_multiplier=40):
 
     for n in sizes:
         total_steps = steps_multiplier * n * n
-        print(f"  Grid {n}x{n}, {total_steps} steps...")
+        print(f"  Grid {n}x{n}, {total_steps} batches...")
 
         results = run_simulation(n, total_steps, num_snapshots=100,
-                                 model='interacting', seed=42)
+                                 model='interacting', grain_size=grain_size,
+                                 num_buckets=3, adjust=False, seed=42)
 
         max_entropy.append(np.max(results['entropy']))
         max_complexity.append(np.max(results['complexity']))
@@ -87,10 +93,18 @@ if __name__ == '__main__':
     print("Scaling experiment (Figures 6-8)")
     print("=" * 50)
 
-    sizes, max_e, max_c, peak_t = scaling_experiment(sizes=[10, 20, 30, 50])
+    sizes, max_e, max_c, peak_t = scaling_experiment(sizes=[20, 30, 40, 50])
 
     print(f"\n{'Size':>6} {'Max Entropy':>12} {'Max Complexity':>14} {'Peak Time':>10}")
     for i in range(len(sizes)):
         print(f"{sizes[i]:>6} {max_e[i]:>12} {max_c[i]:>14} {peak_t[i]:>10}")
+
+    # Linear fit of max complexity (Fig. 7) and its r^2
+    c = np.polyfit(sizes, max_c, 1)
+    r2 = 1 - np.sum((max_c - np.polyval(c, sizes)) ** 2) / np.sum((max_c - max_c.mean()) ** 2)
+    print(f"\nMax complexity vs n: slope {c[0]:+.2f} bytes per unit n, linear r^2 = {r2:.3f}"
+          f" (paper Fig. 7: r^2 = 0.98)")
+    print(f"Time to peak grows as n^{np.polyfit(np.log(sizes), np.log(peak_t), 1)[0]:.1f}"
+          f" in batches (one batch = ~0.07 n^2 swaps once mixing)")
 
     fit_and_plot(sizes, max_e, max_c, peak_t)
